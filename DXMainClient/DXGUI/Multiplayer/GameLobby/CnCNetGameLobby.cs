@@ -41,6 +41,12 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
         private const string DICE_ROLL_MESSAGE = "DR";
         private const string CHANGE_TUNNEL_SERVER_MESSAGE = "CHTNL";
 
+        private static readonly string[] MATCHMAKING_1V1_MODE_PRIORITY = { "Default", "Standard", "Tournament", "Custom Map" };
+        private static readonly string[] MATCHMAKING_1V1_COLOR_PRIORITY = { "Blue", "Red" };
+        private static readonly string[] MATCHMAKING_2V2V2V2_COLOR_PRIORITY = { "Blue", "Red", "Green", "Orange", "Cyan", "Purple", "Yellow", "Pink" };
+        private static readonly string[] MATCHMAKING_ALLIED_SIDE_NAMES = { "Allied", "Allies" };
+        private static readonly string[] MATCHMAKING_SOVIET_SIDE_NAMES = { "Soviet", "Soviets" };
+
         public CnCNetGameLobby(
             WindowManager windowManager, 
             TopBar topBar, 
@@ -147,6 +153,10 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
         private int skillLevel = ClientConfiguration.Instance.DefaultSkillLevelIndex;
 
         private string gameRoomName;
+        private string matchmakingPresetMode;
+        private bool autoLaunchStarted;
+        private bool factionPresetApplied;
+        private System.Threading.CancellationTokenSource autoLaunchCancellation;
 
         private bool isCustomPassword = false;
 
@@ -302,7 +312,7 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
 
         public void StartInactiveCheck()
         {
-            if (isCustomPassword)
+            if (isCustomPassword || IsHiddenMatchmakingRoom())
                 return;
 
             gameHostInactiveChecker?.Start();
@@ -342,6 +352,22 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
             TopBar.SwitchToPrimary();
             WindowManager.SelectedControl = tbChatInput;
             ResetAutoReadyCheckbox();
+
+            if (!IsHost && IsHiddenMatchmakingRoom())
+            {
+                // Set opposite of Host Faction/Color
+                DTAClient.Domain.Multiplayer.PlayerInfo hostInfo = Players.Find(p => !p.IsAI && p.Name != ProgramConstants.PLAYERNAME);
+                if (hostInfo != null)
+                {
+                    int oppositeSide = hostInfo.SideId == 0 ? 1 : 0;
+                    int oppositeColor = hostInfo.ColorId == 0 ? 1 : 0;
+                    RequestPlayerOptions(oppositeSide, oppositeColor, 0, 0);
+                }
+
+                chkAutoReady.Enable();
+                chkAutoReady.Checked = true;
+            }
+
             UpdatePing();
             UpdateDiscordPresence(true);
         }
@@ -571,6 +597,10 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
         public override void Clear()
         {
             base.Clear();
+            factionPresetApplied = false; // Reset for subsequent matchmaking matches
+            
+            autoLaunchCancellation?.Cancel();
+            autoLaunchStarted = false;
 
             if (channel != null)
             {
@@ -624,7 +654,7 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
             }
 
             Clear();
-            channel?.Leave();
+            try { channel?.Leave(); } catch { }
         }
 
         private void ConnectionManager_Disconnected(object sender, EventArgs e) => HandleConnectionLoss();
@@ -673,30 +703,34 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
 
         private void Channel_UserQuitIRC(object sender, UserNameEventArgs e)
         {
-            RemovePlayer(e.UserName);
+            AddCallback(new Action(() => {
+                RemovePlayer(e.UserName);
 
-            if (e.UserName == hostName)
-            {
-                connectionManager.MainChannel.AddMessage(new ChatMessage(
-                    ERROR_MESSAGE_COLOR, "The game host abandoned the game.".L10N("Client:Main:HostAbandoned")));
-                BtnLeaveGame_LeftClick(this, EventArgs.Empty);
-            }
-            else
-                UpdateDiscordPresence();
+                if (e.UserName == hostName)
+                {
+                    connectionManager.MainChannel.AddMessage(new ChatMessage(
+                        ERROR_MESSAGE_COLOR, "The game host abandoned the game.".L10N("Client:Main:HostAbandoned")));
+                    BtnLeaveGame_LeftClick(this, EventArgs.Empty);
+                }
+                else
+                    UpdateDiscordPresence();
+            }), null);
         }
 
         private void Channel_UserLeft(object sender, UserNameEventArgs e)
         {
-            RemovePlayer(e.UserName);
+            AddCallback(new Action(() => {
+                RemovePlayer(e.UserName);
 
-            if (e.UserName == hostName)
-            {
-                connectionManager.MainChannel.AddMessage(new ChatMessage(
-                    ERROR_MESSAGE_COLOR, "The game host abandoned the game.".L10N("Client:Main:HostAbandoned")));
-                BtnLeaveGame_LeftClick(this, EventArgs.Empty);
-            }
-            else
-                UpdateDiscordPresence();
+                if (e.UserName == hostName)
+                {
+                    connectionManager.MainChannel.AddMessage(new ChatMessage(
+                        ERROR_MESSAGE_COLOR, "The game host abandoned the game.".L10N("Client:Main:HostAbandoned")));
+                    BtnLeaveGame_LeftClick(this, EventArgs.Empty);
+                }
+                else
+                    UpdateDiscordPresence();
+            }), null);
         }
 
         private void Channel_UserKicked(object sender, UserNameEventArgs e)
@@ -761,6 +795,12 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
                 // new player, and it also sends an options broadcast message
                 //CopyPlayerDataToUI(); This is also called by ChangeMap()
                 ChangeMap(GameModeMap);
+                
+                if (matchmakingPresetMode != null)
+                {
+                    ApplyMatchmakingFactionColorPreset(broadcastChanges: false);
+                }
+
                 BroadcastPlayerOptions();
                 BroadcastPlayerExtraOptions();
                 UpdateDiscordPresence();
@@ -1468,7 +1508,20 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
         /// </summary>
         protected override void GameProcessExited()
         {
+            if (!string.IsNullOrEmpty(matchmakingPresetMode))
+            {
+                Logger.Log($"MatchmakingGameExited: Auto-leaving room. mode={matchmakingPresetMode}");
+                LeaveGameLobby();
+                return;
+            }
+
             ResetGameState();
+
+            if (IsHiddenMatchmakingRoom())
+            {
+                TopBar.AddPrimarySwitchable(this);
+                TopBar.SwitchToPrimary();
+            }
         }
 
         protected void GameStartAborted()
@@ -1479,6 +1532,9 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
         protected void ResetGameState() 
         {
             base.GameProcessExited();
+            autoLaunchCancellation?.Cancel();
+            autoLaunchStarted = false;
+            factionPresetApplied = false;
 
             channel.SendCTCPMessage("RETURN", QueuedMessageType.SYSTEM_MESSAGE, 20);
             ReturnNotification(ProgramConstants.PLAYERNAME);
@@ -1589,6 +1645,11 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
             channel.SendCTCPMessage("STRTD", QueuedMessageType.SYSTEM_MESSAGE, 20);
 
             base.StartGame();
+
+            if (IsHiddenMatchmakingRoom())
+            {
+                TopBar.AddPrimarySwitchable(this);
+            }
         }
 
         protected override void WriteSpawnIniAdditions(IniFile iniFile)
@@ -1893,7 +1954,50 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
 
         protected override bool UpdateLaunchGameButtonStatus()
         {
-            btnLaunchGame.Enabled = base.UpdateLaunchGameButtonStatus() && !tunnelErrorMode;
+            bool isReady = base.UpdateLaunchGameButtonStatus() && !tunnelErrorMode;
+            btnLaunchGame.Enabled = isReady;
+
+            if (IsHost && IsHiddenMatchmakingRoom())
+            {
+                // Re-apply faction/color preset once the guest has joined (Players.Count >= 2)
+                if (!factionPresetApplied && Players.Count >= 2)
+                {
+                    factionPresetApplied = true;
+                    Logger.Log("[MM] Applying faction/color preset now that all players have joined.");
+                    ApplyMatchmakingFactionColorPreset(broadcastChanges: true);
+                }
+
+                if (isReady && !autoLaunchStarted)
+                {
+                    autoLaunchStarted = true;
+                    // // StartAutoLaunchCountdown(); // Disabled temporarily by user request // Disabled temporarily by user request
+                    autoLaunchCancellation = new System.Threading.CancellationTokenSource();
+                    var token = autoLaunchCancellation.Token;
+
+                    Logger.Log("Auto-Launching matchmaking game in 10 seconds...");
+                    /*
+                    System.Threading.Tasks.Task.Run(async () => {
+                        try {
+                            await System.Threading.Tasks.Task.Delay(10000, token);
+                            WindowManager.AddCallback(new Action(() => {
+                                Logger.Log("Auto-Launching matchmaking game now!");
+                                HostLaunchGame();
+                            }), null);
+                        } catch (System.Threading.Tasks.TaskCanceledException) {
+                            Logger.Log("Auto-Launch countdown cancelled.");
+                        }
+                    });
+                    */
+                    Logger.Log("Auto-Launch disabled by user requested comment.");
+                }
+                else if (!isReady && autoLaunchStarted)
+                {
+                    autoLaunchCancellation?.Cancel();
+                    autoLaunchStarted = false;
+                    Logger.Log("Auto-Launch cancelled due to players status change.");
+                }
+            }
+
             return btnLaunchGame.Enabled;
         }
 
@@ -2228,6 +2332,9 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
 
         private void BroadcastGame()
         {
+            if (channel == null || connectionManager == null)
+                return;
+
             Channel broadcastChannel = connectionManager.FindChannel(gameCollection.GetGameBroadcastingChannelNameFromIdentifier(localGame));
 
             if (broadcastChannel == null)
@@ -2315,5 +2422,277 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
         #endregion
 
         public override string GetSwitchName() => "Game Lobby".L10N("Client:Main:GameLobby");
-    }
+    
+        public void SetMatchmakingMode(string mode)
+        {
+            matchmakingPresetMode = string.IsNullOrWhiteSpace(mode) ? null : mode.Trim();
+        }
+
+        public bool IsHiddenMatchmakingRoom() => !string.IsNullOrEmpty(matchmakingPresetMode);
+
+        public bool ApplyMatchmakingHostPreset(string mode)
+        {
+            if (!IsHost || string.IsNullOrEmpty(mode))
+                return false;
+
+            matchmakingPresetMode = mode;
+            ApplyMatchmakingOptionPreset(mode);
+            ApplyMatchmakingFactionColorPreset(broadcastChanges: true);
+            return true;
+        }
+
+        public bool ApplyMatchmakingFactionColorPreset(bool broadcastChanges)
+        {
+            if (!IsHost || string.IsNullOrEmpty(matchmakingPresetMode) || Players.Count == 0)
+                return false;
+
+            bool is1v1Mode = string.Equals(matchmakingPresetMode, "1v1", StringComparison.OrdinalIgnoreCase);
+            bool is2v2v2v2Mode = string.Equals(matchmakingPresetMode, "2v2v2v2", StringComparison.OrdinalIgnoreCase);
+            if (!is1v1Mode && !is2v2v2v2Mode)
+                return false;
+
+            int alliedSideIndex = FindSideIndex(MATCHMAKING_ALLIED_SIDE_NAMES);
+            int sovietSideIndex = FindSideIndex(MATCHMAKING_SOVIET_SIDE_NAMES);
+            if (alliedSideIndex < 0 || sovietSideIndex < 0)
+            {
+                Logger.Log($"[MM] PresetSkipped: mode={matchmakingPresetMode}, reason=side-not-found, alliedSideIndex={alliedSideIndex}, sovietSideIndex={sovietSideIndex}");
+                return false;
+            }
+
+            bool canAssignTeams = is2v2v2v2Mode &&
+                GameModeMap != null &&
+                !GameModeMap.IsCoop &&
+                !GameModeMap.ForceNoTeams &&
+                !GetPlayerExtraOptions().IsForceNoTeams;
+
+            string[] preferredColorNames = is1v1Mode
+                ? MATCHMAKING_1V1_COLOR_PRIORITY
+                : MATCHMAKING_2V2V2V2_COLOR_PRIORITY;
+
+            int playerCountToAssign = Math.Min(Players.Count, is2v2v2v2Mode ? 8 : 2);
+            int maximumTeamId = ProgramConstants.TEAMS.Count;
+            bool anyChanged = false;
+            var usedColorIndices = new HashSet<int>();
+
+            for (int i = 0; i < playerCountToAssign; i++)
+            {
+                PlayerInfo playerInfo = Players[i];
+
+                int sideIndex = i % 2 == 0 ? alliedSideIndex : sovietSideIndex;
+                int colorIndex = ResolveColorIndex(preferredColorNames, i, usedColorIndices);
+                int teamId = 0;
+
+                if (canAssignTeams && maximumTeamId > 0)
+                    teamId = Math.Min((i / 2) + 1, maximumTeamId);
+
+                bool playerChanged = false;
+                if (playerInfo.SideId != sideIndex)
+                {
+                    playerInfo.SideId = sideIndex;
+                    playerChanged = true;
+                }
+
+                if (colorIndex >= 0 && playerInfo.ColorId != colorIndex)
+                {
+                    playerInfo.ColorId = colorIndex;
+                    playerChanged = true;
+                }
+
+                if (playerInfo.TeamId != teamId)
+                {
+                    playerInfo.TeamId = teamId;
+                    playerChanged = true;
+                }
+
+                if (playerChanged)
+                    anyChanged = true;
+
+                Logger.Log($"[MM] PlayerPreset: mode={matchmakingPresetMode}, player={playerInfo.Name}, slot={i}, sideId={playerInfo.SideId}, colorId={playerInfo.ColorId}, teamId={playerInfo.TeamId}");
+            }
+
+            if (!anyChanged)
+                return false;
+
+            CopyPlayerDataToUI();
+
+            if (broadcastChanges)
+            {
+                BroadcastPlayerOptions();
+                BroadcastPlayerExtraOptions();
+            }
+
+            return true;
+        }
+
+        private void ApplyMatchmakingOptionPreset(string mode)
+        {
+
+
+            SetCheckBoxValue("chkShortGame", true);
+            SetCheckBoxValue("chkRedeplMCV", true);
+            SetCheckBoxValue("chkAutoRepair", false);
+            SetCheckBoxValue("chkMultiEng", false);
+            SetCheckBoxValue("chkIngameAllying", true);
+            SetCheckBoxValue("chkDestrBridges", true);
+            SetCheckBoxValue("chkBuildOffAlly", true);
+            SetCheckBoxValue("chkCrates", false);
+            SetCheckBoxValue("chkDisableGameSpeed", true);
+            
+            // User requested presets
+            SetCheckBoxValue("chkNoYuri", true);
+            SetCheckBoxValue("chkSuperWeapons", false);
+            SetCheckBoxValue("chkIngameAllying", true);
+            SetCheckBoxValue("chkDestrBridges", true);
+            SetCheckBoxValue("chkBuildOffAlly", true);
+            SetCheckBoxValue("chkCrates", false);
+            SetCheckBoxValue("chkDisableGameSpeed", true);
+
+            SetDropDownValueByText("cmbCredits", "10000");
+            SetDropDownValueByText("cmbStartingUnits", "0");
+            SetDropDownValueByIndex("cmbGameSpeedCapMultiplayer", 0);
+
+            // Super weapons check
+            GameLobbyDropDown superWeaponsDropDown = FindDropDown("cmbSuperWeaponsModifier");
+            if (superWeaponsDropDown != null)
+                
+            
+            SetDropDownValueByIndex(superWeaponsDropDown.Name, superWeaponsDropDown.Items.Count - 1);
+
+            // Matchmaking Random Map Selection (Strictly Backend Filtered)
+            if (GameModeMaps != null && GameModeMaps.Count > 0)
+            {
+                int reqPlayers = string.Equals(mode, "2v2v2v2", StringComparison.OrdinalIgnoreCase) ? 8 : 2;
+                var suitableMaps = GameModeMaps.Where(m => m.Map != null && m.Map.MaxPlayers == reqPlayers).ToList();
+                
+                if (suitableMaps.Count > 0)
+                {
+                    Random rnd = new Random();
+                    var randomMap = suitableMaps[rnd.Next(suitableMaps.Count)];
+                    ChangeMap(randomMap);
+                    Logger.Log($"[Matchmaking] Backend randomized map to {randomMap.Map.Name} for max players {reqPlayers}");
+                }
+                else
+                {
+                    Logger.Log($"[Matchmaking] Warning: NO maps found for max players {reqPlayers} in mode {mode}!");
+                }
+            }
+
+
+            // Matchmaking Random Map Selection
+
+
+        }
+
+        private void SetCheckBoxValue(string checkBoxName, bool value)
+        {
+            GameLobbyCheckBox checkBox = CheckBoxes.Find(cb =>
+                string.Equals(cb.Name, checkBoxName, StringComparison.OrdinalIgnoreCase));
+            if (checkBox == null)
+                return;
+
+            checkBox.HostChecked = value;
+            checkBox.UserChecked = value;
+
+            if (checkBox.Checked != value)
+                checkBox.Checked = value;
+        }
+
+        private GameLobbyDropDown FindDropDown(string dropDownName) =>
+            DropDowns.Find(dd => string.Equals(dd.Name, dropDownName, StringComparison.OrdinalIgnoreCase));
+
+        private void SetDropDownValueByText(string dropDownName, string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                return;
+
+            GameLobbyDropDown dropDown = FindDropDown(dropDownName);
+            if (dropDown == null)
+                return;
+
+            int index = dropDown.Items.FindIndex(item =>
+                string.Equals(item.Text?.Trim(), text, StringComparison.OrdinalIgnoreCase));
+            if (index >= 0)
+                SetDropDownValueByIndex(dropDownName, index);
+        }
+
+        private void SetDropDownValueByIndex(string dropDownName, int index)
+        {
+            GameLobbyDropDown dropDown = FindDropDown(dropDownName);
+            if (dropDown == null || index < 0 || index >= dropDown.Items.Count)
+                return;
+
+            dropDown.HostSelectedIndex = index;
+            dropDown.UserSelectedIndex = index;
+
+            if (dropDown.SelectedIndex != index)
+                dropDown.SelectedIndex = index;
+        }
+
+        private int FindSideIndex(IEnumerable<string> sideNames)
+        {
+            XNAClientDropDown sideDropDown = ddPlayerSides?.FirstOrDefault(dd => dd != null && dd.Items != null && dd.Items.Count > 0);
+            if (sideDropDown == null || sideNames == null)
+                return -1;
+
+            foreach (string sideName in sideNames)
+            {
+                if (string.IsNullOrWhiteSpace(sideName)) continue;
+
+                int index = sideDropDown.Items.FindIndex(item =>
+                    string.Equals(item.Tag as string, sideName, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(item.Text?.Trim(), sideName, StringComparison.OrdinalIgnoreCase));
+
+                if (index >= 0 && sideDropDown.Items[index].Selectable)
+                    return index;
+            }
+            return -1;
+        }
+
+        private int FindColorIndex(string colorName)
+        {
+            if (string.IsNullOrWhiteSpace(colorName)) return -1;
+
+            XNAClientColorDropDown colorDropDown = ddPlayerColors?.FirstOrDefault(dd => dd != null && dd.Items != null && dd.Items.Count > 0);
+            if (colorDropDown == null) return -1;
+
+            return colorDropDown.Items.FindIndex(item => string.Equals(item.Text?.Trim(), colorName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private int ResolveColorIndex(string[] preferredColorNames, int playerIndex, HashSet<int> usedColorIndices)
+        {
+            if (usedColorIndices == null) throw new ArgumentNullException(nameof(usedColorIndices));
+
+            int preferredColorIndex = -1;
+            if (preferredColorNames != null && playerIndex >= 0 && playerIndex < preferredColorNames.Length)
+                preferredColorIndex = FindColorIndex(preferredColorNames[playerIndex]);
+
+            if (IsColorSelectable(preferredColorIndex) && !usedColorIndices.Contains(preferredColorIndex))
+            {
+                usedColorIndices.Add(preferredColorIndex);
+                return preferredColorIndex;
+            }
+
+            XNAClientColorDropDown colorDropDown = ddPlayerColors?.FirstOrDefault(dd => dd != null && dd.Items != null && dd.Items.Count > 0);
+            if (colorDropDown == null) return -1;
+
+            for (int i = 1; i < colorDropDown.Items.Count; i++)
+            {
+                if (!usedColorIndices.Contains(i) && IsColorSelectable(i))
+                {
+                    usedColorIndices.Add(i);
+                    return i;
+                }
+            }
+            return preferredColorIndex;
+        }
+
+        private bool IsColorSelectable(int colorIndex)
+        {
+            XNAClientColorDropDown colorDropDown = ddPlayerColors?.FirstOrDefault(dd => dd != null && dd.Items != null && dd.Items.Count > 0);
+            if (colorDropDown == null || colorIndex < 0 || colorIndex >= colorDropDown.Items.Count)
+                return false;
+
+            return colorDropDown.Items[colorIndex].Selectable;
+        }
+}
 }

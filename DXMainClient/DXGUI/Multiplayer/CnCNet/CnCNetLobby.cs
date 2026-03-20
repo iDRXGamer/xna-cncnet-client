@@ -1,4 +1,4 @@
-﻿using ClientCore;
+using ClientCore;
 using ClientGUI;
 using DTAClient.Domain.Multiplayer;
 using DTAClient.Domain.Multiplayer.CnCNet;
@@ -55,7 +55,8 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             ctcpCommandHandlers = new CommandHandlerBase[]
             {
                 new StringCommandHandler(ProgramConstants.GAME_INVITE_CTCP_COMMAND, HandleGameInviteCommand),
-                new NoParamCommandHandler(ProgramConstants.GAME_INVITATION_FAILED_CTCP_COMMAND, HandleGameInvitationFailedNotification)
+                new NoParamCommandHandler(ProgramConstants.GAME_INVITATION_FAILED_CTCP_COMMAND, HandleGameInvitationFailedNotification),
+                new StringCommandHandler(MatchmakingService.PrivateJoinCommandName, HandleMatchmakingRoomInvitation)
             };
 
             topBar.LogoutEvent += LogoutEvent;
@@ -73,6 +74,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
         private GlobalContextMenu globalContextMenu;
 
         private XNAClientButton btnLogout;
+        private XNAClientButton btnMatchmaking;
         private XNAClientButton btnNewGame;
         private XNAClientButton btnJoinGame;
 
@@ -91,6 +93,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
         private XNAClientStateButton<SortDirection> btnGameSortAlpha;
 
         private XNAClientToggleButton btnGameFilterOptions;
+        private XNAClientDropDown ddMatchmakingMode;
 
         private DarkeningPanel gameCreationPanel;
 
@@ -146,9 +149,35 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
         private bool ctcpNoTunnelMessageShown = false;
         private bool ctcpNoTunnelForGamesMessageShown = false;
 
+        private MatchmakingService matchmakingService;
+        private MatchmakingLogger matchmakingLogger;
+        private readonly HashSet<string> hiddenMatchmakingChannels = new(StringComparer.OrdinalIgnoreCase);
+        private readonly bool matchmakingAutoTestEnabled =
+            string.Equals(Environment.GetEnvironmentVariable("MM_AUTOTEST"), "1", StringComparison.OrdinalIgnoreCase);
+        private bool matchmakingAutoTestStarted;
+
+        private List<string> pendingMatchmakingParticipants;
+        private string pendingMatchmakingMode;
+
+        private string lastCreatedGameChannelName;
+        private string lastCreatedGamePassword;
+        private string lastCreatedGameRoomName;
+        private CnCNetTunnel lastCreatedGameTunnel;
+        private int lastCreatedGameMaxPlayers;
+        private int lastCreatedGameSkillLevel;
+        private const int MatchmakingModeWidth = 90;
+        private const int CurrentChannelWidth = 200;
+        private const int CurrentChannelLabelWidth = 150;
+        private const int TopControlsSpacing = 8;
+        private const QueuedMessageType MatchmakingQueueMessageType = QueuedMessageType.INSTANT_MESSAGE;
+        private const int MatchmakingQueueMessagePriority = 0;
+        private const QueuedMessageType MatchmakingInviteMessageType = QueuedMessageType.INSTANT_MESSAGE;
+        private const int MatchmakingInviteMessagePriority = 0;
+
         private void GameList_ClientRectangleUpdated(object sender, EventArgs e)
         {
             panelGameFilters.ClientRectangle = lbGameList.ClientRectangle;
+            LayoutTopLobbyControls();
         }
 
         private void LogoutEvent(object sender, EventArgs e)
@@ -167,10 +196,19 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             BackgroundTexture = AssetLoader.LoadTexture("cncnetlobbybg.png");
             localGameID = ClientConfiguration.Instance.LocalGame;
             localGame = gameCollection.GameList.Find(g => g.InternalName.ToUpper() == localGameID.ToUpper());
+            matchmakingLogger = new MatchmakingLogger(() => ProgramConstants.PLAYERNAME);
+
+            btnMatchmaking = new XNAClientButton(WindowManager);
+            btnMatchmaking.Name = nameof(btnMatchmaking);
+            btnMatchmaking.ClientRectangle = new Rectangle(12, Height - 29, UIDesignConstants.BUTTON_WIDTH_133, UIDesignConstants.BUTTON_HEIGHT);
+            btnMatchmaking.Text = "Matchmaking".L10N("Client:Main:Matchmaking");
+            btnMatchmaking.AllowClick = false;
+            btnMatchmaking.LeftClick += BtnMatchmaking_LeftClick;
 
             btnNewGame = new XNAClientButton(WindowManager);
             btnNewGame.Name = nameof(btnNewGame);
-            btnNewGame.ClientRectangle = new Rectangle(12, Height - 29, UIDesignConstants.BUTTON_WIDTH_133, UIDesignConstants.BUTTON_HEIGHT);
+            btnNewGame.ClientRectangle = new Rectangle(btnMatchmaking.Right + 12, btnMatchmaking.Y,
+                UIDesignConstants.BUTTON_WIDTH_133, UIDesignConstants.BUTTON_HEIGHT);
             btnNewGame.Text = "Create Game".L10N("Client:Main:CreateGame");
             btnNewGame.AllowClick = false;
             btnNewGame.LeftClick += BtnNewGame_LeftClick;
@@ -199,6 +237,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             panelGameFilters.Name = nameof(panelGameFilters);
             panelGameFilters.ClientRectangle = gameListRectangle;
             panelGameFilters.Disable();
+            panelGameFilters.Visible = false;
 
             lbGameList = new GameListBox(WindowManager, mapLoader, localGameID, gameLobby, HostedGameMatches);
             lbGameList.Name = nameof(lbGameList);
@@ -341,8 +380,34 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             btnGameFilterOptions.SetToolTipText("Game Filters".L10N("Client:Main:GameFilters"));
             RefreshGameFiltersBtn();
 
+            ddMatchmakingMode = new XNAClientDropDown(WindowManager);
+            ddMatchmakingMode.Name = nameof(ddMatchmakingMode);
+            ddMatchmakingMode.ClientRectangle = new Rectangle(
+                lbGameList.X,
+                tbGameSearch.Y,
+                MatchmakingModeWidth,
+                UIDesignConstants.BUTTON_HEIGHT);
+            ddMatchmakingMode.AddItem(new XNADropDownItem { Text = "1v1" });
+            ddMatchmakingMode.AddItem(new XNADropDownItem { Text = "2v2v2v2" });
+            ddMatchmakingMode.SelectedIndex = 0;
+            ddMatchmakingMode.AllowDropDown = true;
+
+            matchmakingService = new MatchmakingService(
+                random,
+                () => ProgramConstants.PLAYERNAME,
+                matchmakingLogger,
+                GetSelectedMatchmakingMode,
+                CanJoinMatchmakingQueue,
+                CanHostMatchmakingQueue,
+                GetRequiredPlayersForMode,
+                SendMatchmakingChannelCommand,
+                AddMainChannelNotice,
+                SetMatchmakingQueueUiState,
+                OnLocalMatchClaimed);
+
             InitializeGameList();
 
+            AddChild(btnMatchmaking);
             AddChild(btnNewGame);
             AddChild(btnJoinGame);
             AddChild(btnLogout);
@@ -359,6 +424,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             AddChild(lblOnline);
             AddChild(lblOnlineCount);
             AddChild(tbGameSearch);
+            AddChild(ddMatchmakingMode);
             AddChild(btnGameSortAlpha);
             AddChild(btnGameFilterOptions);
 
@@ -371,6 +437,8 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             pmWindow.SetJoinUserAction(JoinUser);
 
             base.Initialize();
+            AlignMatchmakingButtonWithMainButtons();
+            LayoutTopLobbyControls();
 
             WindowManager.CenterControlOnScreen(this);
 
@@ -533,6 +601,15 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                 }
 
                 item.Tag = chatChannel;
+
+                if (game.InternalName.ToUpper() == localGameID.ToUpper())
+                {
+                    chatChannel.CTCPReceived += MatchmakingChatChannel_CTCPReceived;
+                    chatChannel.UserAdded += MatchmakingChatChannel_UserAdded;
+                    chatChannel.UserLeft += MatchmakingChatChannel_UserLeftOrQuit;
+                    chatChannel.UserQuitIRC += MatchmakingChatChannel_UserLeftOrQuit;
+                    chatChannel.UserKicked += MatchmakingChatChannel_UserLeftOrQuit;
+                }
 
                 if (!string.IsNullOrEmpty(game.GameBroadcastChannel))
                 {
@@ -822,7 +899,475 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             btnLogout.Text = "Log Out".L10N("Client:Main:LogOut");
         }
 
-        private void BtnJoinGame_LeftClick(object sender, EventArgs e) => JoinSelectedGame();
+        private void BtnJoinGame_LeftClick(object sender, EventArgs e)
+        {
+            if (matchmakingService?.IsInQueue == true)
+            {
+                matchmakingService.LeaveQueue(true, false);
+            }
+
+            JoinSelectedGame();
+        }
+
+        private void BtnMatchmaking_LeftClick(object sender, EventArgs e)
+        {
+            if (gameLobby.Enabled)
+            {
+                gameLobby.LeaveGameLobby();
+                isInGameRoom = false; // Fix race condition for immediate queue toggle
+            }
+            if (gameLoadingLobby.Enabled)
+            {
+                gameLoadingLobby.Clear();
+                isInGameRoom = false;
+            }
+
+            matchmakingService?.ToggleQueue();
+        }
+
+        private string GetSelectedMatchmakingMode() =>
+            ddMatchmakingMode.SelectedItem?.Text ?? "1v1";
+
+        private int GetRequiredPlayersForMode(string mode) =>
+            string.Equals(mode, "2v2v2v2", StringComparison.OrdinalIgnoreCase) ? 8 : 2;
+
+        private bool CanJoinMatchmakingQueue()
+        {
+            if (isInGameRoom || gameLobby.Enabled || gameLoadingLobby.Enabled || isJoiningGame || ProgramConstants.IsInGame)
+            {
+                matchmakingLogger?.Info("CannotJoinQueue", $"isInGameRoom={isInGameRoom}, gameLobby={gameLobby.Enabled}, gameLoadingLobby={gameLoadingLobby.Enabled}, isJoiningGame={isJoiningGame}, IsInGame={ProgramConstants.IsInGame}");
+                return false;
+            }
+            if (isInGameRoom || gameLobby.Enabled || gameLoadingLobby.Enabled || isJoiningGame || ProgramConstants.IsInGame)
+                return false;
+
+            return tunnelHandler.CurrentTunnel != null ||
+                (tunnelHandler.Tunnels != null && tunnelHandler.Tunnels.Count > 0);
+        }
+
+        private bool CanHostMatchmakingQueue() =>
+            !isInGameRoom && !gameLobby.Enabled && !gameLoadingLobby.Enabled && !isJoiningGame && !ProgramConstants.IsInGame;
+
+        private void SetMatchmakingQueueUiState(bool queued)
+        {
+            if (ddMatchmakingMode != null)
+                ddMatchmakingMode.AllowDropDown = !queued;
+
+            if (btnMatchmaking != null)
+                btnMatchmaking.Text = queued ? "Leave Queue" : "Matchmaking".L10N("Client:Main:Matchmaking");
+        }
+
+        private void AlignMatchmakingButtonWithMainButtons()
+        {
+            int matchmakingX = Math.Max(12, btnNewGame.X - UIDesignConstants.BUTTON_WIDTH_133 - 12);
+            btnMatchmaking.ClientRectangle = new Rectangle(
+                matchmakingX,
+                btnNewGame.Y,
+                UIDesignConstants.BUTTON_WIDTH_133,
+                UIDesignConstants.BUTTON_HEIGHT);
+        }
+
+        private void LayoutTopLobbyControls()
+        {
+            if (tbGameSearch == null || btnGameSortAlpha == null || btnGameFilterOptions == null || lbGameList == null)
+                return;
+
+            const int iconSize = 21;
+            const int minSearchWidth = 120;
+
+            int left = lbGameList.X;
+            int y = tbGameSearch.Y;
+            int right = lbGameList.Right;
+
+            if (lbChatMessages != null)
+                right = Math.Min(right, lbChatMessages.X - TopControlsSpacing);
+
+            if (lblOnline != null && lblOnline.Visible && lblOnline.Enabled)
+                right = Math.Min(right, lblOnline.X - TopControlsSpacing);
+
+            int requiredWidth = iconSize + iconSize + (TopControlsSpacing * 2) + minSearchWidth;
+            if (right - left < requiredWidth)
+                right = lbGameList.Right;
+
+            int searchWidth = right - left - iconSize - iconSize - (TopControlsSpacing * 2);
+            if (searchWidth < minSearchWidth)
+                searchWidth = minSearchWidth;
+
+            tbGameSearch.ClientRectangle = new Rectangle(
+                left,
+                y,
+                searchWidth,
+                tbGameSearch.Height);
+
+            btnGameSortAlpha.ClientRectangle = new Rectangle(
+                tbGameSearch.Right + TopControlsSpacing,
+                y,
+                iconSize,
+                iconSize);
+
+            btnGameFilterOptions.ClientRectangle = new Rectangle(
+                btnGameSortAlpha.Right + TopControlsSpacing,
+                y,
+                iconSize,
+                iconSize);
+            LayoutCurrentChannelAndMatchmakingModeControls();
+        }
+
+        private void LayoutCurrentChannelAndMatchmakingModeControls()
+        {
+            if (ddCurrentChannel == null || lblCurrentChannel == null || ddMatchmakingMode == null || lbChatMessages == null || ddColor == null)
+                return;
+
+            int y = ddColor.Y;
+
+            ddCurrentChannel.ClientRectangle = new Rectangle(
+                lbChatMessages.Right - CurrentChannelWidth,
+                y,
+                CurrentChannelWidth,
+                ddCurrentChannel.Height);
+
+            lblCurrentChannel.ClientRectangle = new Rectangle(
+                ddCurrentChannel.X - CurrentChannelLabelWidth,
+                ddCurrentChannel.Y + 2,
+                0,
+                0);
+
+            int modeX = lblCurrentChannel.X - TopControlsSpacing - MatchmakingModeWidth;
+            int minimumModeX = btnGameFilterOptions != null
+                ? btnGameFilterOptions.Right + TopControlsSpacing
+                : lbGameList.X;
+            modeX = Math.Max(minimumModeX, modeX);
+
+            ddMatchmakingMode.ClientRectangle = new Rectangle(
+                modeX,
+                y,
+                MatchmakingModeWidth,
+                UIDesignConstants.BUTTON_HEIGHT);
+        }
+
+        private void AddMainChannelNotice(string message) =>
+            connectionManager.MainChannel?.AddMessage(new ChatMessage(Color.White, message));
+
+        private void MatchmakingChatChannel_CTCPReceived(object sender, ChannelCTCPEventArgs e)
+        {
+            string prefix = MatchmakingService.ChannelCommandName + " ";
+            if (!e.Message.StartsWith(prefix, StringComparison.Ordinal))
+                return;
+
+            matchmakingService?.HandleChannelCommand(e.UserName, e.Message.Substring(prefix.Length));
+        }
+
+        private void MatchmakingChatChannel_UserAdded(object sender, ChannelUserEventArgs e)
+        {
+            if (!matchmakingAutoTestEnabled || matchmakingAutoTestStarted)
+                return;
+
+            if (!string.Equals(e.User.IRCUser.Name, ProgramConstants.PLAYERNAME, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            // Start once local player has fully joined the local game chat channel.
+            // This mirrors a real button click for smoke testing.
+            if (ddMatchmakingMode != null && ddMatchmakingMode.Items.Count > 0)
+                ddMatchmakingMode.SelectedIndex = 0;
+
+            if (CanJoinMatchmakingQueue())
+            {
+                matchmakingAutoTestStarted = true;
+                matchmakingLogger?.Info("AutoTestJoinQueue", "mode=1v1");
+                matchmakingService?.ToggleQueue();
+            }
+            else
+            {
+                matchmakingLogger?.Warn("AutoTestJoinQueueSkipped", "reason=client_not_ready");
+            }
+        }
+
+        private void MatchmakingChatChannel_UserLeftOrQuit(object sender, UserNameEventArgs e) =>
+            matchmakingService?.HandleUserLeftOrQuit(e.UserName);
+
+        private void OnLocalMatchClaimed(string mode, List<string> participants) =>
+            TryCreateMatchmakingRoom(mode, participants);
+
+        private void TryCreateMatchmakingRoom(string mode, List<string> participants)
+        {
+            try
+            {
+                if (participants == null || participants.Count == 0)
+                    return;
+
+                if (gameLobby.Enabled || gameLoadingLobby.Enabled || isInGameRoom || isJoiningGame)
+                    return;
+
+                CnCNetTunnel selectedTunnel = tunnelHandler.CurrentTunnel ?? tunnelHandler.Tunnels?.FirstOrDefault();
+                if (selectedTunnel == null)
+                {
+                    matchmakingLogger?.Warn("CreateRoomFailed", "reason=no_tunnel");
+                    AddMainChannelNotice("Matchmaking failed: no tunnel server is available.");
+                    return;
+                }
+
+                int maxPlayers = GetRequiredPlayersForMode(mode);
+                string roomName = $"{mode} Match {random.Next(1000, 9999)}";
+
+                pendingMatchmakingParticipants = participants
+                    .Where(p => !string.Equals(p, ProgramConstants.PLAYERNAME, StringComparison.OrdinalIgnoreCase))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                pendingMatchmakingMode = mode;
+
+                matchmakingLogger?.Info("CreateRoomRequested",
+                    $"mode={mode}, maxPlayers={maxPlayers}, participants={string.Join(",", participants)}");
+
+                string previousCreatedChannelName = lastCreatedGameChannelName;
+                Gcw_GameCreated(this, new GameCreationEventArgs(roomName, maxPlayers, string.Empty, selectedTunnel, 0));
+
+                if (pendingMatchmakingParticipants != null &&
+                    string.Equals(previousCreatedChannelName, lastCreatedGameChannelName, StringComparison.OrdinalIgnoreCase))
+                {
+                    pendingMatchmakingParticipants = null;
+                    pendingMatchmakingMode = null;
+                    matchmakingLogger?.Warn("CreateRoomFailed", "reason=no_new_channel_created");
+                    AddMainChannelNotice("Matchmaking failed: unable to create a room.");
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                matchmakingLogger?.Error("CreateRoomException", ex);
+                AddMainChannelNotice("Matchmaking failed: unexpected error while creating room.");
+            }
+        }
+
+        private void TrySendMatchmakingParticipantsToRoom(string hostName)
+        {
+            if (pendingMatchmakingParticipants == null || pendingMatchmakingParticipants.Count == 0)
+                return;
+
+            if (string.IsNullOrEmpty(lastCreatedGameChannelName) ||
+                string.IsNullOrEmpty(lastCreatedGamePassword) ||
+                lastCreatedGameTunnel == null)
+            {
+                return;
+            }
+
+            string commandParameters =
+                $"{pendingMatchmakingMode};{lastCreatedGameChannelName};{lastCreatedGameRoomName};{lastCreatedGamePassword};{lastCreatedGameMaxPlayers};{lastCreatedGameSkillLevel};{lastCreatedGameTunnel.Address};{lastCreatedGameTunnel.Port}";
+
+            matchmakingLogger?.Info("InvitePrepared",
+                $"mode={pendingMatchmakingMode}, host={hostName}, room={lastCreatedGameRoomName}, channel={lastCreatedGameChannelName}, participants={string.Join(",", pendingMatchmakingParticipants)}, messageType={MatchmakingInviteMessageType}, priority={MatchmakingInviteMessagePriority}");
+
+            foreach (string participant in pendingMatchmakingParticipants)
+            {
+                if (string.Equals(participant, hostName, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(participant, ProgramConstants.PLAYERNAME, StringComparison.OrdinalIgnoreCase))
+                {
+                    matchmakingLogger?.Info("InviteSkippedHost",
+                        $"mode={pendingMatchmakingMode}, host={hostName}, participant={participant}, room={lastCreatedGameRoomName}, channel={lastCreatedGameChannelName}");
+                    continue;
+                }
+
+                connectionManager.SendCustomMessage(new QueuedMessage(
+                    $"PRIVMSG {participant} :\u0001{MatchmakingService.PrivateJoinCommandName} {commandParameters}\u0001",
+                    MatchmakingInviteMessageType, MatchmakingInviteMessagePriority));
+
+                matchmakingLogger?.Info("InviteSent",
+                    $"mode={pendingMatchmakingMode}, host={hostName}, participant={participant}, room={lastCreatedGameRoomName}, channel={lastCreatedGameChannelName}, messageType={MatchmakingInviteMessageType}, priority={MatchmakingInviteMessagePriority}");
+            }
+
+            matchmakingLogger?.Info("InvitesSent",
+                $"mode={pendingMatchmakingMode}, room={lastCreatedGameRoomName}, channel={lastCreatedGameChannelName}, participants={string.Join(",", pendingMatchmakingParticipants)}");
+
+            AddMainChannelNotice($"Match found ({pendingMatchmakingMode}). Room created on {hostName}.");
+
+            pendingMatchmakingParticipants = null;
+            pendingMatchmakingMode = null;
+        }
+
+        private void SendMatchmakingChannelCommand(string payload)
+        {
+            Channel matchmakingChannel = connectionManager.FindChannel(
+                gameCollection.GetGameChatChannelNameFromIdentifier(localGameID));
+
+            if (matchmakingChannel == null)
+            {
+                matchmakingLogger?.Warn("QueueCommandDropped", $"reason=missing_channel,payload={payload}");
+                return;
+            }
+
+            matchmakingChannel.SendCTCPMessage(
+                $"{MatchmakingService.ChannelCommandName} {payload}",
+                MatchmakingQueueMessageType, MatchmakingQueueMessagePriority);
+
+            matchmakingLogger?.Info("QueueCommandSent",
+                $"channel={matchmakingChannel.ChannelName}, payload={payload}, messageType={MatchmakingQueueMessageType}, priority={MatchmakingQueueMessagePriority}");
+        }
+
+        private static bool IsLikelyMatchmakingRoomName(string roomName)
+        {
+            if (string.IsNullOrWhiteSpace(roomName))
+                return false;
+
+            return roomName.StartsWith("1v1 Match ", StringComparison.OrdinalIgnoreCase) ||
+                   roomName.StartsWith("2v2v2v2 Match ", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool ShouldHideMatchmakingRoom(string channelName, string roomName)
+        {
+            if (!string.IsNullOrWhiteSpace(channelName) &&
+                hiddenMatchmakingChannels.Contains(channelName))
+            {
+                return true;
+            }
+
+            return IsLikelyMatchmakingRoomName(roomName);
+        }
+
+        private void TrackHiddenMatchmakingRoom(string channelName, string roomName, string mode)
+        {
+            if (!string.IsNullOrWhiteSpace(channelName))
+                hiddenMatchmakingChannels.Add(channelName);
+
+            bool removedAny = false;
+            for (int i = lbGameList.HostedGames.Count - 1; i >= 0; i--)
+            {
+                var hostedGame = (HostedCnCNetGame)lbGameList.HostedGames[i];
+                bool channelMatches = !string.IsNullOrWhiteSpace(channelName) &&
+                    string.Equals(hostedGame.ChannelName, channelName, StringComparison.OrdinalIgnoreCase);
+                bool roomMatches = !string.IsNullOrWhiteSpace(roomName) &&
+                    string.Equals(hostedGame.RoomName, roomName, StringComparison.OrdinalIgnoreCase);
+
+                if (!channelMatches && !roomMatches)
+                    continue;
+
+                lbGameList.RemoveGame(i);
+                removedAny = true;
+            }
+
+            if (removedAny)
+                SortAndRefreshHostedGames();
+
+            matchmakingLogger?.Info("HiddenRoomTracked",
+                $"mode={mode}, channel={channelName}, room={roomName}");
+        }
+
+        private void HandleMatchmakingRoomInvitation(string sender, string argumentsString)
+        {
+            try
+            {
+                if (!CanReceiveInvitationMessagesFrom(sender))
+                {
+                    matchmakingLogger?.Info("JoinInvitationIgnored", $"reason=sender_not_allowed,sender={sender}");
+                    return;
+                }
+
+                if (isInGameRoom || gameLobby.Enabled || gameLoadingLobby.Enabled || isJoiningGame || ProgramConstants.IsInGame)
+                {
+                    matchmakingLogger?.Info("JoinInvitationIgnored", $"reason=already_in_room_or_joining,sender={sender}");
+                    return;
+                }
+
+                string[] arguments = argumentsString.Split(';');
+                if (arguments.Length < 8)
+                    return;
+
+                string mode = arguments[0];
+                string channelName = arguments[1];
+                string roomName = arguments[2];
+                string password = arguments[3];
+
+                if (!int.TryParse(arguments[4], out int maxPlayers))
+                    return;
+
+                if (!int.TryParse(arguments[5], out int skillLevel))
+                    skillLevel = 0;
+
+                string tunnelAddress = arguments[6];
+
+                if (!int.TryParse(arguments[7], out int tunnelPort))
+                    return;
+
+                TrackHiddenMatchmakingRoom(channelName, roomName, mode);
+
+                matchmakingLogger?.Info("InviteReceived",
+                    $"sender={sender}, mode={mode}, room={roomName}, channel={channelName}");
+
+                CnCNetTunnel tunnel = FindTunnelByAddressAndPort(tunnelAddress, tunnelPort);
+                if (tunnel == null)
+                {
+                    matchmakingLogger?.Warn("JoinInvitationRejected", $"reason=tunnel_unavailable,address={tunnelAddress},port={tunnelPort}");
+                    AddMainChannelNotice($"Matchmaking failed: tunnel {tunnelAddress}:{tunnelPort} is unavailable.");
+                    return;
+                }
+
+                if (localGame == null)
+                {
+                    matchmakingLogger?.Warn("JoinInvitationRejected", "reason=missing_local_game");
+                    AddMainChannelNotice("Matchmaking failed: local game definition is missing.");
+                    return;
+                }
+
+                if (matchmakingService?.IsInQueue == true)
+                    matchmakingService.LeaveQueue(false, false);
+
+                AddMainChannelNotice($"Match found ({mode}). Joining room...");
+
+                var hostedGame = new HostedCnCNetGame(
+                    channelName,
+                    ProgramConstants.CNCNET_PROTOCOL_REVISION,
+                    ProgramConstants.GAME_VERSION,
+                    maxPlayers,
+                    roomName,
+                    !string.IsNullOrEmpty(password),
+                    true,
+                    new[] { sender, ProgramConstants.PLAYERNAME },
+                    sender,
+                    string.Empty,
+                    mode,
+                    string.Empty)
+                {
+                    Game = localGame,
+                    TunnelServer = tunnel,
+                    SkillLevel = skillLevel,
+                    IsLoadedGame = false,
+                    Locked = false,
+                    Incompatible = false
+                };
+
+                matchmakingLogger?.Info("JoinInvitationAccepted",
+                    $"sender={sender}, mode={mode}, channel={channelName}, room={roomName}");
+
+                matchmakingLogger?.Info("JoinGameStarted",
+                    $"source=matchmaking_invite, host={sender}, mode={mode}, channel={channelName}, room={roomName}");
+
+                gameLobby.SetMatchmakingMode(mode);
+                bool joinStarted = JoinGame(hostedGame, password, connectionManager.MainChannel);
+                matchmakingLogger?.Info("JoinGameResult",
+                    $"source=matchmaking_invite, host={sender}, mode={mode}, channel={channelName}, room={roomName}, success={joinStarted}");
+
+                if (!joinStarted)
+                {
+                    gameLobby.SetMatchmakingMode(null);
+                    AddMainChannelNotice("Matchmaking failed: unable to join the created room.");
+                }
+            }
+            catch (Exception ex)
+            {
+                matchmakingLogger?.Error("JoinInvitationException", ex);
+                AddMainChannelNotice("Matchmaking failed: unexpected error while joining room.");
+            }
+        }
+
+        private CnCNetTunnel FindTunnelByAddressAndPort(string address, int port) =>
+            tunnelHandler.Tunnels?.FirstOrDefault(t =>
+                string.Equals(t.Address, address, StringComparison.OrdinalIgnoreCase) &&
+                t.Port == port);
+
+        private void ResetMatchmakingState()
+        {
+            pendingMatchmakingParticipants = null;
+            pendingMatchmakingMode = null;
+            matchmakingService?.Reset();
+        }
 
         private void LbGameList_DoubleLeftClick(object sender, EventArgs e) => JoinSelectedGame();
 
@@ -963,6 +1508,9 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
         private void _JoinGame(HostedCnCNetGame hg, string password)
         {
+            if (matchmakingService?.IsInQueue == true)
+                matchmakingService.LeaveQueue(true, false);
+
             connectionManager.MainChannel.AddMessage(new ChatMessage(Color.White,
                 string.Format("Attempting to join game {0} ...".L10N("Client:Main:AttemptJoin"), hg.RoomName)));
             isJoiningGame = true;
@@ -1044,9 +1592,21 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             if (e.User.IRCUser.Name == ProgramConstants.PLAYERNAME)
             {
                 ClearGameChannelEvents(gameChannel);
+                if (!string.IsNullOrEmpty(pendingMatchmakingMode))
+                    gameLobby.SetMatchmakingMode(pendingMatchmakingMode);
                 gameLobby.OnJoined();
+
+                if (!string.IsNullOrEmpty(pendingMatchmakingMode))
+                {
+                    bool presetApplied = gameLobby.ApplyMatchmakingHostPreset(pendingMatchmakingMode);
+                    matchmakingLogger?.Info("MatchmakingPresetApplied",
+                        $"mode={pendingMatchmakingMode}, success={presetApplied}");
+                }
+
                 isInGameRoom = true;
                 SetLogOutButtonText();
+                matchmakingLogger?.Info("JoinedGameRoom", $"channel={gameChannel.ChannelName}, room={gameChannel.UIName}");
+                TrySendMatchmakingParticipantsToRoom(ProgramConstants.PLAYERNAME);
             }
         }
 
@@ -1074,6 +1634,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                 return;
             }
 
+            if (matchmakingService?.IsInQueue == true) { matchmakingService.LeaveQueue(true, false); }
             gameCreationPanel.Show();
             var gcw = (GameCreationWindow)gameCreationPanel.Tag;
 
@@ -1082,6 +1643,9 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
         private void Gcw_GameCreated(object sender, GameCreationEventArgs e)
         {
+            if (matchmakingService?.IsInQueue == true)
+                matchmakingService.LeaveQueue(true, false);
+
             if (gameLobby.Enabled || gameLoadingLobby.Enabled)
                 return;
 
@@ -1107,12 +1671,28 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
             gameCreationPanel.Hide();
 
+            lastCreatedGameChannelName = channelName;
+            lastCreatedGamePassword = password;
+            lastCreatedGameRoomName = e.GameRoomName;
+            lastCreatedGameTunnel = e.Tunnel;
+            lastCreatedGameMaxPlayers = e.MaxPlayers;
+            lastCreatedGameSkillLevel = e.SkillLevel;
+
+            matchmakingLogger?.Info("RoomCreated",
+                $"channel={channelName}, room={e.GameRoomName}, maxPlayers={e.MaxPlayers}, tunnel={e.Tunnel?.Address}:{e.Tunnel?.Port}");
+
+            if (!string.IsNullOrEmpty(pendingMatchmakingMode))
+                TrackHiddenMatchmakingRoom(channelName, e.GameRoomName, pendingMatchmakingMode);
+
             // update the friends window so it can enable the Invite option
             pmWindow.SetInviteChannelInfo(channelName, e.GameRoomName, string.IsNullOrEmpty(e.Password) ? string.Empty : e.Password);
         }
 
         private void Gcw_LoadedGameCreated(object sender, GameCreationEventArgs e)
         {
+            if (matchmakingService?.IsInQueue == true)
+                matchmakingService.LeaveQueue(true, false);
+
             if (gameLobby.Enabled || gameLoadingLobby.Enabled)
                 return;
 
@@ -1206,6 +1786,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
         private void ConnectionManager_Disconnected(object sender, EventArgs e)
         {
+            btnMatchmaking.AllowClick = false;
             btnNewGame.AllowClick = false;
             btnJoinGame.AllowClick = false;
             ddCurrentChannel.AllowDropDown = false;
@@ -1216,6 +1797,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             followedGames.Clear();
 
             gameCreationPanel.Hide();
+            ResetMatchmakingState();
 
             // Switch channel to default
             if (localGame != null)
@@ -1231,10 +1813,12 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
         private void ConnectionManager_WelcomeMessageReceived(object sender, EventArgs e)
         {
+            btnMatchmaking.AllowClick = true;
             btnNewGame.AllowClick = true;
             btnJoinGame.AllowClick = true;
             ddCurrentChannel.AllowDropDown = true;
             tbChatInput.Enabled = true;
+            matchmakingAutoTestStarted = false;
 
             Channel cncnetChannel = connectionManager.FindChannel("#cncnet");
             cncnetChannel?.Join();
@@ -1262,6 +1846,9 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
             gameCheckCancellation = new CancellationTokenSource();
             CnCNetGameCheck.Instance.InitializeService(gameCheckCancellation);
+
+            if (matchmakingAutoTestEnabled)
+                matchmakingLogger?.Info("AutoTestEnabled", "MM_AUTOTEST=1");
         }
 
         private void ConnectionManager_PrivateCTCPReceived(object sender, PrivateCTCPEventArgs e)
@@ -1557,30 +2144,36 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             string msg = e.Message.Substring(5); // Cut out GAME part
             string[] splitMessage = msg.Split(new char[] { ';' });
 
-            if (splitMessage.Length != 14)
-            {
-                Logger.Log("Ignoring CTCP game message because of an invalid amount of parameters.");
-
-                // Remind users that the network is good but the client is outdated or newer
-                if (lbGameList.Items.Count == 0 && lbGameList.HostedGames.Count == 0 && !ctcpInvalidGameMessageShown)
-                {
-                    ctcpInvalidGameMessageShown = true;
-
-                    string message = ("There are no games listed but you are indeed connected. The client did receive a game message but can't add it to the list because the message is invalid. " +
-                        "You can ignore this prompt if there are games listed later. " +
-                        "Otherwise, this usually means that your client is outdated, or, in a rare case, newer than others. Please check for updates.").L10N("Client:Main:InvalidGameMessage");
-
-                    lbChatMessages.AddMessage(new ChatMessage(Color.Gray, message));
-                }
-
-                return;
-            }
-
             try
             {
+                if (splitMessage.Length == 0)
+                    return;
+
                 string revision = splitMessage[0];
                 if (revision != ProgramConstants.CNCNET_PROTOCOL_REVISION)
                     return;
+
+                // R13 game announcements are expected to have at least 13 parameters.
+                // The 14th (broadcasted game options) is optional.
+                if (splitMessage.Length < 13)
+                {
+                    Logger.Log("Ignoring CTCP game message because of an invalid amount of parameters.");
+
+                    // Remind users that the network is good but the client is outdated or newer
+                    if (lbGameList.Items.Count == 0 && lbGameList.HostedGames.Count == 0 && !ctcpInvalidGameMessageShown)
+                    {
+                        ctcpInvalidGameMessageShown = true;
+
+                        string message = ("There are no games listed but you are indeed connected. The client did receive a game message but can't add it to the list because the message is invalid. " +
+                            "You can ignore this prompt if there are games listed later. " +
+                            "Otherwise, this usually means that your client is outdated, or, in a rare case, newer than others. Please check for updates.").L10N("Client:Main:InvalidGameMessage");
+
+                        lbChatMessages.AddMessage(new ChatMessage(Color.Gray, message));
+                    }
+
+                    return;
+                }
+
                 string gameVersion = splitMessage[1];
                 int maxPlayers = Conversions.IntFromString(splitMessage[2], 0);
                 string gameRoomChannelName = splitMessage[3];
@@ -1596,12 +2189,30 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                 string gameMode = splitMessage[8];
 
                 string[] tunnelAddressAndPort = splitMessage[9].Split(':');
+                if (tunnelAddressAndPort.Length < 2)
+                    return;
+
                 string tunnelAddress = tunnelAddressAndPort[0];
                 int tunnelPort = int.Parse(tunnelAddressAndPort[1]);
 
                 string loadedGameId = splitMessage[10];
                 int skillLevel = int.Parse(splitMessage[11]);
                 string mapHash = splitMessage[12];
+
+                if (ShouldHideMatchmakingRoom(gameRoomChannelName, gameRoomDisplayName))
+                {
+                    int hiddenGameIndex = lbGameList.HostedGames.FindIndex(hg =>
+                        string.Equals(((HostedCnCNetGame)hg).ChannelName, gameRoomChannelName, StringComparison.OrdinalIgnoreCase));
+                    if (hiddenGameIndex > -1)
+                    {
+                        lbGameList.RemoveGame(hiddenGameIndex);
+                        SortAndRefreshHostedGames();
+                    }
+
+                    matchmakingLogger?.Info("HiddenRoomFiltered",
+                        $"host={e.UserName}, channel={gameRoomChannelName}, room={gameRoomDisplayName}");
+                    return;
+                }
 
                 int[] gameOptionValues = null;
 
@@ -1613,7 +2224,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                     {
                         gameOptionValues = null;
                     }
-                    else if (!string.IsNullOrEmpty(splitMessage[13]))
+                    else if (splitMessage.Length > 13 && !string.IsNullOrEmpty(splitMessage[13]))
                     {
                         gameOptionValues = new int[broadcastableSettings.Count];
                         string[] allValueStrings = splitMessage[13].Split(',');
@@ -1755,6 +2366,9 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
         private void BtnLogout_LeftClick(object sender, EventArgs e)
         {
+            if (matchmakingService?.IsInQueue == true)
+                matchmakingService.LeaveQueue(true, false);
+
             if (isInGameRoom)
             {
                 topBar.SwitchToPrimary();
