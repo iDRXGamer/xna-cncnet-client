@@ -374,7 +374,7 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
 
         private void UpdatePing()
         {
-            if (tunnelHandler.CurrentTunnel == null)
+            if (tunnelHandler == null || tunnelHandler.CurrentTunnel == null)
                 return;
 
             channel.SendCTCPMessage("TNLPNG " + tunnelHandler.CurrentTunnel.PingInMs, QueuedMessageType.SYSTEM_MESSAGE, 10);
@@ -400,7 +400,7 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
 
         private void PrintTunnelServerInformation(string s)
         {
-            if (tunnelHandler.CurrentTunnel == null)
+            if (tunnelHandler == null || tunnelHandler.CurrentTunnel == null)
             {
                 AddNotice("Tunnel server unavailable!".L10N("Client:Main:TunnelUnavailable"));
             }
@@ -912,9 +912,9 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
 
                 StringBuilder sb = new StringBuilder("START ");
                 sb.Append(UniqueGameID);
-                for (int pId = 0; pId < Players.Count; pId++)
-                {
-                    Players[pId].Port = playerPorts[pId];
+                for (int pId = 0; pId < Players.Count; pId++) {
+                if (pId >= playerPorts.Count || Players[pId] == null) continue;
+                Players[pId].Port = playerPorts[pId];
                     sb.Append(";");
                     sb.Append(Players[pId].Name);
                     sb.Append(";");
@@ -1511,6 +1511,11 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
             if (!string.IsNullOrEmpty(matchmakingPresetMode))
             {
                 Logger.Log($"MatchmakingGameExited: Auto-leaving room. mode={matchmakingPresetMode}");
+                if (TopBar != null)
+                {
+                    TopBar.AddPrimarySwitchable(this);
+                    TopBar.SwitchToPrimary();
+                }
                 LeaveGameLobby();
                 return;
             }
