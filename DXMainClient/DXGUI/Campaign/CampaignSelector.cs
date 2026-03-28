@@ -67,10 +67,10 @@ namespace DTAClient.DXGUI.Campaign
         private List<IUserSetting> userSettings = new List<IUserSetting>();
 
         private CheaterWindow cheaterWindow;
-        
+
         public List<CampaignCheckBox> CheckBoxes { get; } = new();
         public List<CampaignDropDown> DropDowns { get; } = new();
-        
+
         private IniFile gameOptionsIni;
 
         private string[] filesToCheck = new string[]
@@ -272,11 +272,6 @@ namespace DTAClient.DXGUI.Campaign
 
             userSettings.AddRange(Children.OfType<IUserSetting>());
 
-            foreach (var cb in userSettings)
-            {
-                cb.Load();
-            }
-
             ReadMissionList();
 
             cheaterWindow = new CheaterWindow(WindowManager);
@@ -287,7 +282,7 @@ namespace DTAClient.DXGUI.Campaign
             cheaterWindow.CenterOnParent();
             cheaterWindow.YesClicked += CheaterWindow_YesClicked;
             cheaterWindow.Disable();
-            
+
             LoadSettings();
         }
 
@@ -394,11 +389,8 @@ namespace DTAClient.DXGUI.Campaign
 
         private void BtnLaunch_LeftClick(object sender, EventArgs e)
         {
-            // Save user settings before launching the mission
-            userSettings.ForEach(c => c.Save());
-
             SaveSettings();
-            
+
             int selectedMissionId = lbCampaignList.SelectedIndex;
 
             Mission mission = selectedMissions[selectedMissionId];
@@ -443,7 +435,7 @@ namespace DTAClient.DXGUI.Campaign
             CustomMissionHelper.CopySupplementalMissionFiles(mission);
 
             string scenario = mission.Scenario;
-            
+
             FileInfo spawnerSettingsFile = SafePath.GetFile(ProgramConstants.GamePath, ProgramConstants.SPAWNER_SETTINGS);
 
             spawnerSettingsFile.Delete();
@@ -527,15 +519,15 @@ namespace DTAClient.DXGUI.Campaign
             if (copyMapsToSpawnmapINI)
             {
                 var mapIni = new IniFile(SafePath.CombineFilePath(ProgramConstants.GamePath, mission.Scenario));
-                
+
                 IniFile.ConsolidateIniFiles(mapIni, difficultyIni);
-                
+
                 foreach (CampaignCheckBox chkBox in CheckBoxes)
                     chkBox.ApplyMapCode(mapIni, gameMode: null);
-                
+
                 foreach (CampaignDropDown dd in DropDowns)
                     dd.ApplyMapCode(mapIni, gameMode: null);
-                
+
                 mapIni.WriteIniFile(SafePath.CombineFilePath(ProgramConstants.GamePath, "spawnmap.ini"));
             }
 
@@ -589,7 +581,7 @@ namespace DTAClient.DXGUI.Campaign
                 if (string.IsNullOrEmpty(loadingScreenName))
                 {
                     string lsFilename = CustomMissionHelper.CustomMissionSupplementDefinition.FirstOrDefault(x => x.extension.Equals("shp", StringComparison.InvariantCultureIgnoreCase)).filename;
-                    
+
                     if (!string.IsNullOrEmpty(lsFilename))
                     {
                         spawnIniMissionIniSection.AddOrReplaceKey("LS640BkgdName", lsFilename);
@@ -599,7 +591,7 @@ namespace DTAClient.DXGUI.Campaign
                 if (string.IsNullOrEmpty(loadingScreenPalName))
                 {
                     string palFilename = CustomMissionHelper.CustomMissionSupplementDefinition.FirstOrDefault(x => x.extension.Equals("pal", StringComparison.InvariantCultureIgnoreCase)).filename;
-                    
+
                     if (!string.IsNullOrEmpty(palFilename))
                         spawnIniMissionIniSection.AddOrReplaceKey("LS800BkgdPal", palFilename);
                 }
@@ -649,24 +641,30 @@ namespace DTAClient.DXGUI.Campaign
             if (!ClientConfiguration.Instance.ReturnToMainMenuOnMissionLaunch)
                 ToggleControls(true);
 
-            bool altered = false;
-
-            foreach (IUserSetting setting in userSettings)
+            // Handle ResetToDefaultOnGameExit
             {
-                if (!setting.ResetToDefaultOnGameExit)
-                    continue;
+                // Reset campaign checkboxes
+                foreach (CampaignCheckBox cb in CheckBoxes)
+                {
+                    if (cb.ResetToDefaultOnGameExit)
+                        cb.ResetToDefault();
+                }
 
-                if (setting is SettingCheckBoxBase cb)
-                    cb.Checked = cb.DefaultValue;
-                else if (setting is SettingDropDownBase dd)
-                    dd.SelectedIndex = dd.DefaultValue;
+                // Reset user settings
+                foreach (IUserSetting setting in userSettings)
+                {
+                    if (!setting.ResetToDefaultOnGameExit)
+                        continue;
 
-                setting.Save();
-                altered = true;
+                    if (setting is SettingCheckBoxBase cb)
+                        cb.Checked = cb.DefaultValue;
+                    else if (setting is SettingDropDownBase dd)
+                        dd.SelectedIndex = dd.DefaultValue;
+                }
+
+                SaveSettings();
             }
 
-            if (altered)
-                UserINISettings.Instance.SaveSettings();
         }
 
         private void ReadMissionList()
@@ -784,7 +782,7 @@ namespace DTAClient.DXGUI.Campaign
             else if (disableOfficialMissions)
             {
                 missions = missions.Where(mission => mission.IsCustomMission);
-            }                
+            }
             else
             {
                 // do nothing
@@ -830,6 +828,18 @@ namespace DTAClient.DXGUI.Campaign
         /// </summary>
         private void SaveSettings()
         {
+            SaveUserSettings();
+            SaveCampaignSettings();
+        }
+
+        private void SaveUserSettings()
+        {
+            userSettings.ForEach(c => c.Save());
+            UserINISettings.Instance.SaveSettings();
+        }
+
+        private void SaveCampaignSettings()
+        {
             if (!ClientConfiguration.Instance.SaveCampaignGameOptions)
                 return;
 
@@ -840,7 +850,7 @@ namespace DTAClient.DXGUI.Campaign
                 settingsFileInfo.Delete();
 
                 var settingsIni = new IniFile(settingsFileInfo.FullName);
-                
+
                 foreach (CampaignDropDown dd in DropDowns)
                     settingsIni.SetStringValue("GameOptions", dd.Name, dd.SelectedIndex.ToString());
 
@@ -854,17 +864,25 @@ namespace DTAClient.DXGUI.Campaign
                 Logger.Log($"Saving campaign settings failed! Reason: {ex}");
             }
         }
-        
+
         /// <summary>
         /// Loads settings from an INI file on the file system.
         /// </summary>
         private void LoadSettings()
         {
+            LoadUserSettings();
+            LoadCampaignSettings();
+        }
+
+        private void LoadUserSettings() => userSettings.ForEach(c => c.Load());
+
+        private void LoadCampaignSettings()
+        {
             if (!ClientConfiguration.Instance.SaveCampaignGameOptions)
                 return;
 
             var settingsIni = new IniFile(SafePath.CombineFilePath(ProgramConstants.GamePath, SETTINGS_PATH));
-                
+
             foreach (CampaignDropDown dd in DropDowns)
             {
                 dd.SelectedIndex = settingsIni.GetIntValue("GameOptions", dd.Name, dd.SelectedIndex);
