@@ -387,9 +387,14 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                 tbGameSearch.Y,
                 MatchmakingModeWidth,
                 UIDesignConstants.BUTTON_HEIGHT);
-            ddMatchmakingMode.AddItem(new XNADropDownItem { Text = "1v1" });
-            ddMatchmakingMode.AddItem(new XNADropDownItem { Text = "2v2v2v2" });
-            ddMatchmakingMode.SelectedIndex = 0;
+            MatchmakingSettings.Instance.Initialize();
+            MatchmakingMapDefinitions.Instance.Initialize();
+            foreach (var mode in MatchmakingSettings.Instance.Modes)
+            {
+                ddMatchmakingMode.AddItem(new XNADropDownItem { Text = mode.UIName });
+            }
+            if (ddMatchmakingMode.Items.Count > 0)
+                ddMatchmakingMode.SelectedIndex = 0;
             ddMatchmakingMode.AllowDropDown = true;
 
             matchmakingService = new MatchmakingService(
@@ -604,11 +609,18 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
                 if (game.InternalName.ToUpper() == localGameID.ToUpper())
                 {
-                    chatChannel.CTCPReceived += MatchmakingChatChannel_CTCPReceived;
-                    chatChannel.UserAdded += MatchmakingChatChannel_UserAdded;
-                    chatChannel.UserLeft += MatchmakingChatChannel_UserLeftOrQuit;
-                    chatChannel.UserQuitIRC += MatchmakingChatChannel_UserLeftOrQuit;
-                    chatChannel.UserKicked += MatchmakingChatChannel_UserLeftOrQuit;
+                    string mmName = game.ChatChannel + "-mm";
+                    var mmChannel = connectionManager.FindChannel(mmName);
+                    if (mmChannel == null)
+                    {
+                        mmChannel = connectionManager.CreateChannel(game.UIName + " Matchmaking", mmName, true, false, null);
+                        connectionManager.AddChannel(mmChannel);
+                    }
+                    mmChannel.CTCPReceived += MatchmakingChatChannel_CTCPReceived;
+                    mmChannel.UserAdded += MatchmakingChatChannel_UserAdded;
+                    mmChannel.UserLeft += MatchmakingChatChannel_UserLeftOrQuit;
+                    mmChannel.UserQuitIRC += MatchmakingChatChannel_UserLeftOrQuit;
+                    mmChannel.UserKicked += MatchmakingChatChannel_UserLeftOrQuit;
                 }
 
                 if (!string.IsNullOrEmpty(game.GameBroadcastChannel))
@@ -928,8 +940,11 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
         private string GetSelectedMatchmakingMode() =>
             ddMatchmakingMode.SelectedItem?.Text ?? "1v1";
 
-        private int GetRequiredPlayersForMode(string mode) =>
-            string.Equals(mode, "2v2v2v2", StringComparison.OrdinalIgnoreCase) ? 8 : 2;
+        private int GetRequiredPlayersForMode(string mode)
+        {
+            var def = MatchmakingSettings.Instance.Modes.FirstOrDefault(m => string.Equals(m.UIName, mode, StringComparison.OrdinalIgnoreCase));
+            return def != null ? def.PlayerCount : 2;
+        }
 
         private bool CanJoinMatchmakingQueue()
         {
@@ -1185,8 +1200,8 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
         private void SendMatchmakingChannelCommand(string payload)
         {
-            Channel matchmakingChannel = connectionManager.FindChannel(
-                gameCollection.GetGameChatChannelNameFromIdentifier(localGameID));
+            string mmName = gameCollection.GetGameChatChannelNameFromIdentifier(localGameID) + "-mm";
+            Channel matchmakingChannel = connectionManager.FindChannel(mmName);
 
             if (matchmakingChannel == null)
             {
@@ -1825,6 +1840,9 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
             string localGameChatChannelName = gameCollection.GetGameChatChannelNameFromIdentifier(localGameID);
             connectionManager.FindChannel(localGameChatChannelName).Join();
+
+            string mmName = localGameChatChannelName + "-mm";
+            connectionManager.FindChannel(mmName)?.Join();
 
             string localGameBroadcastChannel = gameCollection.GetGameBroadcastingChannelNameFromIdentifier(localGameID);
             connectionManager.FindChannel(localGameBroadcastChannel).Join();

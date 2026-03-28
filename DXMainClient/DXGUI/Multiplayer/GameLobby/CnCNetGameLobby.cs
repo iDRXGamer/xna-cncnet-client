@@ -2451,30 +2451,26 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
             if (!IsHost || string.IsNullOrEmpty(matchmakingPresetMode) || Players.Count == 0)
                 return false;
 
-            bool is1v1Mode = string.Equals(matchmakingPresetMode, "1v1", StringComparison.OrdinalIgnoreCase);
-            bool is2v2v2v2Mode = string.Equals(matchmakingPresetMode, "2v2v2v2", StringComparison.OrdinalIgnoreCase);
-            if (!is1v1Mode && !is2v2v2v2Mode)
+            var modeDef = MatchmakingSettings.Instance.Modes.FirstOrDefault(m => string.Equals(m.UIName, matchmakingPresetMode, StringComparison.OrdinalIgnoreCase));
+            if (modeDef == null)
                 return false;
 
-            int alliedSideIndex = FindSideIndex(MATCHMAKING_ALLIED_SIDE_NAMES);
-            int sovietSideIndex = FindSideIndex(MATCHMAKING_SOVIET_SIDE_NAMES);
+            int alliedSideIndex = FindSideIndex(modeDef.AlliedSideNames);
+            int sovietSideIndex = FindSideIndex(modeDef.SovietSideNames);
+
             if (alliedSideIndex < 0 || sovietSideIndex < 0)
             {
                 Logger.Log($"[MM] PresetSkipped: mode={matchmakingPresetMode}, reason=side-not-found, alliedSideIndex={alliedSideIndex}, sovietSideIndex={sovietSideIndex}");
                 return false;
             }
 
-            bool canAssignTeams = is2v2v2v2Mode &&
+            bool canAssignTeams = modeDef.AssignTeams &&
                 GameModeMap != null &&
                 !GameModeMap.IsCoop &&
                 !GameModeMap.ForceNoTeams &&
                 !GetPlayerExtraOptions().IsForceNoTeams;
 
-            string[] preferredColorNames = is1v1Mode
-                ? MATCHMAKING_1V1_COLOR_PRIORITY
-                : MATCHMAKING_2V2V2V2_COLOR_PRIORITY;
-
-            int playerCountToAssign = Math.Min(Players.Count, is2v2v2v2Mode ? 8 : 2);
+            int playerCountToAssign = Math.Min(Players.Count, modeDef.PlayerCount);
             int maximumTeamId = ProgramConstants.TEAMS.Count;
             bool anyChanged = false;
             var usedColorIndices = new HashSet<int>();
@@ -2484,6 +2480,7 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
                 PlayerInfo playerInfo = Players[i];
 
                 int sideIndex = i % 2 == 0 ? alliedSideIndex : sovietSideIndex;
+                string[] preferredColorNames = i % 2 == 0 ? modeDef.AlliedColors : modeDef.SovietColors;
                 int colorIndex = ResolveColorIndex(preferredColorNames, i, usedColorIndices);
                 int teamId = 0;
 
@@ -2531,44 +2528,43 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
 
         private void ApplyMatchmakingOptionPreset(string mode)
         {
+            var def = MatchmakingSettings.Instance.Modes.FirstOrDefault(m => string.Equals(m.UIName, mode, StringComparison.OrdinalIgnoreCase));
+            if (def == null) return;
 
+            foreach (var kvp in def.ForceCheckboxes)
+                SetCheckBoxValue(kvp.Key, kvp.Value);
 
-            SetCheckBoxValue("chkShortGame", true);
-            SetCheckBoxValue("chkRedeplMCV", true);
-            SetCheckBoxValue("chkAutoRepair", false);
-            SetCheckBoxValue("chkMultiEng", false);
-            SetCheckBoxValue("chkIngameAllying", true);
-            SetCheckBoxValue("chkDestrBridges", true);
-            SetCheckBoxValue("chkBuildOffAlly", true);
-            SetCheckBoxValue("chkCrates", false);
-            SetCheckBoxValue("chkDisableGameSpeed", true);
-            
-            // User requested presets
-            SetCheckBoxValue("chkNoYuri", true);
-            SetCheckBoxValue("chkSuperWeapons", false);
-            SetCheckBoxValue("chkIngameAllying", true);
-            SetCheckBoxValue("chkDestrBridges", true);
-            SetCheckBoxValue("chkBuildOffAlly", true);
-            SetCheckBoxValue("chkCrates", false);
-            SetCheckBoxValue("chkDisableGameSpeed", true);
-
-            SetDropDownValueByText("cmbCredits", "10000");
-            SetDropDownValueByText("cmbStartingUnits", "0");
-            SetDropDownValueByIndex("cmbGameSpeedCapMultiplayer", 0);
-
-            // Super weapons check
-            GameLobbyDropDown superWeaponsDropDown = FindDropDown("cmbSuperWeaponsModifier");
-            if (superWeaponsDropDown != null)
-                
-            
-            SetDropDownValueByIndex(superWeaponsDropDown.Name, superWeaponsDropDown.Items.Count - 1);
+            foreach (var kvp in def.ForceDropdowns)
+            {
+                if (int.TryParse(kvp.Value, out int idx))
+                    SetDropDownValueByIndex(kvp.Key, idx);
+                else
+                    SetDropDownValueByText(kvp.Key, kvp.Value);
+            }
 
             // Matchmaking Random Map Selection (Strictly Backend Filtered)
             if (GameModeMaps != null && GameModeMaps.Count > 0)
             {
-                int reqPlayers = string.Equals(mode, "2v2v2v2", StringComparison.OrdinalIgnoreCase) ? 8 : 2;
-                var suitableMaps = GameModeMaps.Where(m => m.Map != null && m.Map.MaxPlayers == reqPlayers).ToList();
+                int reqPlayers = def.PlayerCount;
+                var suitableMaps = new List<GameModeMap>();
                 
+                // 1. Try to find maps from the defined list in MatchmakingMaps.ini
+                if (MatchmakingMapDefinitions.Instance.ModeMaps.TryGetValue(mode, out var definedMapNames) && definedMapNames.Count > 0)
+                {
+                    suitableMaps = GameModeMaps.Where(m => 
+                        m.Map != null && 
+                        m.Map.MaxPlayers == reqPlayers && 
+                        definedMapNames.Any(dmn => string.Equals(m.Map.Name, dmn, StringComparison.OrdinalIgnoreCase) || string.Equals(m.Map.UntranslatedName, dmn, StringComparison.OrdinalIgnoreCase))
+                    ).ToList();
+                }
+                
+                // 2. Fallback if no matching defined maps were found
+                if (suitableMaps.Count == 0)
+                {
+                    Logger.Log($"[Matchmaking] Warning: Could not find any maps from defined list for {mode}. Falling back to random max_players matching.");
+                    suitableMaps = GameModeMaps.Where(m => m.Map != null && m.Map.MaxPlayers == reqPlayers).ToList();
+                }
+
                 if (suitableMaps.Count > 0)
                 {
                     Random rnd = new Random();
@@ -2578,14 +2574,9 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
                 }
                 else
                 {
-                    Logger.Log($"[Matchmaking] Warning: NO maps found for max players {reqPlayers} in mode {mode}!");
+                    Logger.Log($"[Matchmaking] Error: NO maps found for max players {reqPlayers} in mode {mode}!");
                 }
             }
-
-
-            // Matchmaking Random Map Selection
-
-
         }
 
         private void SetCheckBoxValue(string checkBoxName, bool value)
