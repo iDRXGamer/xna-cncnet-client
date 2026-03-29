@@ -1,3 +1,5 @@
+#nullable enable
+
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -16,7 +18,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
         private readonly Random random;
         private readonly MatchmakingLogger logger;
 
-        private readonly Func<string> selectedModeProvider;
+        private readonly Func<string>? selectedModeProvider;
         private readonly Func<bool> canJoinQueue;
         private readonly Func<bool> canHostMatch;
         private readonly Func<string, int> requiredPlayersForMode;
@@ -24,7 +26,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
         private readonly Action<string> addNotice;
         private readonly Action<bool> setQueueUiState;
         private readonly Action<string, List<string>> localMatchClaimedCallback;
-        private readonly Func<string> localPlayerNameProvider;
+        private readonly Func<string>? localPlayerNameProvider;
 
         private readonly Dictionary<string, List<QueueEntry>> queues =
             new Dictionary<string, List<QueueEntry>>(StringComparer.OrdinalIgnoreCase);
@@ -34,14 +36,17 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         private bool isInQueue;
-        private string queueMode;
-        private string queueTicket;
+        private string? queueMode;
+        private string? queueTicket;
+        private DateTime lastActionTime = DateTime.MinValue;
+        private bool isBusy;
+        private const double ActionCooldownMs = 2000;
 
         public MatchmakingService(
             Random random,
-            Func<string> localPlayerNameProvider,
+            Func<string>? localPlayerNameProvider,
             MatchmakingLogger logger,
-            Func<string> selectedModeProvider,
+            Func<string>? selectedModeProvider,
             Func<bool> canJoinQueue,
             Func<bool> canHostMatch,
             Func<string, int> requiredPlayersForMode,
@@ -64,10 +69,23 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
         }
 
         public bool IsInQueue => isInQueue;
+
         private string LocalPlayerName => localPlayerNameProvider?.Invoke() ?? string.Empty;
 
         public void ToggleQueue()
         {
+            if (DateTime.Now.Subtract(lastActionTime).TotalMilliseconds < ActionCooldownMs)
+            {
+                logger.Warn("ActionThrottled", $"cooldown_remaining={ActionCooldownMs - DateTime.Now.Subtract(lastActionTime).TotalMilliseconds}ms");
+                return;
+            }
+
+            if (isBusy)
+            {
+                logger.Warn("ActionBlocked", "is_busy");
+                return;
+            }
+
             if (isInQueue)
             {
                 LeaveQueue(true, true);
@@ -77,20 +95,76 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             StartQueue();
         }
 
+        public void StartQueue()
+        {
+            if (isInQueue)
+                return;
+
+            if (DateTime.Now.Subtract(lastActionTime).TotalMilliseconds < ActionCooldownMs)
+                return;
+
+            if (!canJoinQueue())
+            {
+                addNotice("Cannot join matchmaking queue while already joining or inside a game room.");
+                logger.Warn("QueueJoinRejected", "client_not_ready");
+                return;
+            }
+
+            string mode = selectedModeProvider?.Invoke() ?? string.Empty;
+
+            if (string.IsNullOrEmpty(mode))
+            {
+                logger.Warn("QueueJoinRejected", "empty_mode");
+                return;
+            }
+
+            string localPlayerName = LocalPlayerName;
+
+            if (string.IsNullOrEmpty(localPlayerName))
+            {
+                logger.Warn("QueueJoinRejected", "empty_local_player_name");
+                addNotice("Cannot join matchmaking queue: missing local player name.");
+                return;
+            }
+
+            isBusy = true;
+            lastActionTime = DateTime.Now;
+
+            isInQueue = true;
+            queueMode = mode;
+            queueTicket = $"{DateTime.UtcNow.Ticks}-{random.Next(1000, 9999)}";
+            setQueueUiState(true);
+
+            AddOrUpdateQueueEntry(localPlayerName, mode, queueTicket);
+            sendQueueCommand($"{CommandJoin};{mode};{queueTicket}");
+            addNotice($"Joined matchmaking queue ({mode}).");
+
+            logger.Info("QueueJoined", $"mode={mode}, ticket={queueTicket}");
+            logger.Info("QueueSnapshot", $"mode={mode}, players={GetQueueSnapshot(mode)}");
+
+            isBusy = false;
+            TryClaimMatch(mode);
+        }
+
         public void LeaveQueue(bool broadcastLeave, bool showMessage)
         {
             if (!isInQueue)
                 return;
 
-            string mode = queueMode;
+            string? mode = queueMode;
 
             logger.Info("QueueLeaveRequested", $"mode={mode}, broadcastLeave={broadcastLeave}");
+
+            isBusy = true;
+            if (broadcastLeave)
+                lastActionTime = DateTime.Now;
 
             ClearQueueState(updateUiState: true);
 
             if (!string.IsNullOrEmpty(mode))
             {
                 string localPlayerName = LocalPlayerName;
+
                 if (!string.IsNullOrEmpty(localPlayerName))
                     RemoveQueueEntryFromMode(localPlayerName, mode);
 
@@ -100,6 +174,8 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
             if (showMessage)
                 addNotice("Left matchmaking queue.");
+
+            isBusy = false;
         }
 
         public void Reset()
@@ -117,6 +193,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                 return;
 
             string[] parts = commandData.Split(';');
+
             if (parts.Length == 0)
                 return;
 
@@ -151,46 +228,10 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
             RemovePlayerFromAllQueues(playerName);
 
-            foreach (var mode in queues.Keys.ToList())
+            foreach (string mode in queues.Keys.ToList())
+            {
                 TryClaimMatch(mode);
-        }
-
-        private void StartQueue()
-        {
-            if (!canJoinQueue())
-            {
-                addNotice("Cannot join matchmaking queue while already joining or inside a game room.");
-                logger.Warn("QueueJoinRejected", "client_not_ready");
-                return;
             }
-
-            string mode = selectedModeProvider?.Invoke() ?? string.Empty;
-            if (string.IsNullOrEmpty(mode))
-            {
-                logger.Warn("QueueJoinRejected", "empty_mode");
-                return;
-            }
-
-            string localPlayerName = LocalPlayerName;
-            if (string.IsNullOrEmpty(localPlayerName))
-            {
-                logger.Warn("QueueJoinRejected", "empty_local_player_name");
-                addNotice("Cannot join matchmaking queue: missing local player name.");
-                return;
-            }
-
-            isInQueue = true;
-            queueMode = mode;
-            queueTicket = $"{DateTime.UtcNow.Ticks}-{random.Next(1000, 9999)}";
-            setQueueUiState(true);
-
-            AddOrUpdateQueueEntry(localPlayerName, mode, queueTicket);
-            sendQueueCommand($"{CommandJoin};{mode};{queueTicket}");
-            addNotice($"Joined matchmaking queue ({mode}).");
-            logger.Info("QueueJoined", $"mode={mode}, ticket={queueTicket}");
-            logger.Info("QueueSnapshot", $"mode={mode}, players={GetQueueSnapshot(mode)}");
-
-            TryClaimMatch(mode);
         }
 
         private void HandleQueueJoin(string sender, string mode, string ticket)
@@ -199,6 +240,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                 return;
 
             AddOrUpdateQueueEntry(sender, mode, ticket);
+
             logger.Info("QueueJoinApplied", $"sender={sender}, mode={mode}, ticket={ticket}");
             logger.Info("QueueSnapshot", $"mode={mode}, players={GetQueueSnapshot(mode)}");
 
@@ -211,6 +253,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                 return;
 
             RemoveQueueEntryFromMode(sender, mode);
+
             logger.Info("QueueLeaveApplied", $"sender={sender}, mode={mode}");
             logger.Info("QueueSnapshot", $"mode={mode}, players={GetQueueSnapshot(mode)}");
 
@@ -255,6 +298,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             }
 
             string designatedHost = participants[0];
+
             logger.Info("MatchClaimAccepted", $"matchId={matchId}, mode={mode}, sender={sender}, host={designatedHost}, participants={string.Join(",", participants)}");
 
             RemovePlayersFromQueues(participants);
@@ -266,9 +310,13 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                 ClearQueueState(updateUiState: true);
 
             if (string.Equals(LocalPlayerName, designatedHost, StringComparison.OrdinalIgnoreCase))
+            {
                 localMatchClaimedCallback(mode, participants);
+            }
             else if (localPlayerInMatch)
+            {
                 logger.Info("MatchClaimAwaitingHost", $"matchId={matchId}, mode={mode}, expectedHost={designatedHost}");
+            }
 
             TryClaimMatch(mode);
         }
@@ -278,25 +326,27 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             if (string.IsNullOrEmpty(mode))
                 return;
 
-            if (!queues.TryGetValue(mode, out List<QueueEntry> queue))
+            if (!queues.TryGetValue(mode, out List<QueueEntry>? queue))
             {
                 logger.Info("MatchClaimSkipped", $"mode={mode}, reason=queue_missing");
                 return;
             }
 
             int requiredPlayers = requiredPlayersForMode(mode);
-            if (queue.Count < requiredPlayers)
+
+            if (queue == null || queue.Count < requiredPlayers)
             {
-                logger.Info("MatchClaimWaiting", $"mode={mode}, queued={queue.Count}, required={requiredPlayers}");
+                logger.Info("MatchClaimWaiting", $"mode={mode}, queued={queue?.Count ?? 0}, required={requiredPlayers}");
                 return;
             }
 
-            var participants = queue
+            List<QueueEntry> participants = queue
                 .OrderBy(qe => qe.PlayerName, StringComparer.OrdinalIgnoreCase)
                 .Take(requiredPlayers)
                 .ToList();
 
             string localPlayerName = LocalPlayerName;
+
             if (!participants.Any(p => string.Equals(p.PlayerName, localPlayerName, StringComparison.OrdinalIgnoreCase)))
             {
                 logger.Info("MatchClaimSkipped", $"mode={mode}, reason=local_not_in_participants, local={localPlayerName}, participants={string.Join(",", participants.Select(p => p.PlayerName))}");
@@ -310,6 +360,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             }
 
             string matchId = $"{mode}:{string.Join("|", participants.Select(p => p.PlayerName + ":" + p.Ticket))}";
+
             if (handledMatchIds.Contains(matchId) || pendingClaimIds.Contains(matchId))
             {
                 logger.Info("MatchClaimSkipped", $"mode={mode}, reason=already_pending_or_handled, matchId={matchId}");
@@ -319,6 +370,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             pendingClaimIds.Add(matchId);
 
             string participantList = string.Join(",", participants.Select(p => p.PlayerName));
+
             logger.Info("MatchClaimBroadcast", $"matchId={matchId}, mode={mode}, sender={localPlayerName}, participants={participantList}");
 
             sendQueueCommand($"{CommandMatch};{mode};{matchId};{participantList}");
@@ -329,7 +381,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
         private string GetQueueSnapshot(string mode)
         {
-            if (string.IsNullOrEmpty(mode) || !queues.TryGetValue(mode, out List<QueueEntry> queue) || queue.Count == 0)
+            if (string.IsNullOrEmpty(mode) || !queues.TryGetValue(mode, out List<QueueEntry>? queue) || queue == null || queue.Count == 0)
                 return "(empty)";
 
             return string.Join(",", queue
@@ -344,7 +396,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
             RemovePlayerFromAllQueues(playerName);
 
-            if (!queues.TryGetValue(mode, out List<QueueEntry> queue))
+            if (!queues.TryGetValue(mode, out List<QueueEntry>? queue) || queue == null)
             {
                 queue = new List<QueueEntry>();
                 queues[mode] = queue;
@@ -359,7 +411,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
         private void RemoveQueueEntryFromMode(string playerName, string mode)
         {
-            if (!queues.TryGetValue(mode, out List<QueueEntry> queue))
+            if (!queues.TryGetValue(mode, out List<QueueEntry>? queue) || queue == null)
                 return;
 
             queue.RemoveAll(qe => string.Equals(qe.PlayerName, playerName, StringComparison.OrdinalIgnoreCase));
@@ -374,13 +426,17 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                 return;
 
             foreach (string mode in queues.Keys.ToList())
+            {
                 RemoveQueueEntryFromMode(playerName, mode);
+            }
         }
 
         private void RemovePlayersFromQueues(List<string> playerNames)
         {
             foreach (string playerName in playerNames)
+            {
                 RemovePlayerFromAllQueues(playerName);
+            }
         }
 
         private void ClearQueueState(bool updateUiState)
@@ -395,8 +451,8 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
         private sealed class QueueEntry
         {
-            public string PlayerName { get; set; }
-            public string Ticket { get; set; }
+            public string PlayerName { get; set; } = string.Empty;
+            public string Ticket { get; set; } = string.Empty;
         }
     }
 }

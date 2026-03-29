@@ -1,3 +1,5 @@
+#nullable enable
+
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -8,8 +10,9 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 {
     public class MatchmakingMapDefinitions
     {
-        private static MatchmakingMapDefinitions instance;
-        public static MatchmakingMapDefinitions Instance => instance ?? (instance = new MatchmakingMapDefinitions());
+        private static MatchmakingMapDefinitions? instance;
+
+        public static MatchmakingMapDefinitions Instance => instance ??= new MatchmakingMapDefinitions();
 
         public Dictionary<string, List<string>> ModeMaps { get; private set; }
 
@@ -22,28 +25,35 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
         {
             ModeMaps.Clear();
             string iniPath = ProgramConstants.GamePath + "INI/MatchmakingMaps.ini";
+
             if (!System.IO.File.Exists(iniPath))
             {
                 CreateDefaultMaps(iniPath);
             }
 
-            IniFile ini = new IniFile(iniPath);
-            foreach (var section in ini.GetSections())
+            var ini = new IniFile(iniPath);
+
+            foreach (string section in ini.GetSections())
             {
-                if (string.IsNullOrEmpty(section)) continue;
+                if (string.IsNullOrEmpty(section))
+                    continue;
                 
-                var keys = ini.GetSectionKeys(section);
-                if (keys == null) continue;
+                List<string>? keys = ini.GetSectionKeys(section);
+                if (keys == null)
+                    continue;
 
                 var maps = new List<string>();
+
                 foreach (string key in keys)
                 {
                     string mapName = ini.GetStringValue(section, key, string.Empty);
+
                     if (!string.IsNullOrWhiteSpace(mapName))
                     {
                         maps.Add(mapName.Trim());
                     }
                 }
+
                 ModeMaps[section] = maps;
             }
         }
@@ -52,7 +62,11 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
         {
             try
             {
-                System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path));
+                string? directoryPath = System.IO.Path.GetDirectoryName(path);
+
+                if (!string.IsNullOrEmpty(directoryPath))
+                    System.IO.Directory.CreateDirectory(directoryPath);
+
                 var lines = new List<string>
                 {
                     "[1v1]",
@@ -63,6 +77,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                     "Map1=Heck Freezes Over",
                     "Map2=Snow Valley"
                 };
+
                 System.IO.File.WriteAllLines(path, lines);
             }
             catch (Exception ex)

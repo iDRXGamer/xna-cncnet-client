@@ -19,6 +19,7 @@ using System.Linq;
 using System.Text;
 using DTAClient.Domain.Multiplayer.CnCNet;
 using ClientCore.Extensions;
+using System.Threading.Tasks;
 
 namespace DTAClient.DXGUI.Multiplayer.GameLobby
 {
@@ -1648,6 +1649,20 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
             if (IsHiddenMatchmakingRoom())
             {
                 TopBar.AddPrimarySwitchable(this);
+
+                if (IsHost)
+                {
+                    AddNotice("Matchmaking: Auto-leaving room in 60 seconds...".L10N("Client:Main:AutoLeaveNotice"));
+                    _ = Task.Run(async () =>
+                    {
+                        await Task.Delay(60000);
+                        if (Enabled && !string.IsNullOrEmpty(matchmakingPresetMode))
+                        {
+                            Logger.Log("Matchmaking: 60s timeout reached, leaving room.");
+                            LeaveGameLobby();
+                        }
+                    });
+                }
             }
         }
 
@@ -2331,7 +2346,7 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
 
         private void BroadcastGame()
         {
-            if (channel == null || connectionManager == null)
+            if (channel == null || connectionManager == null || gameCollection == null || tunnelHandler == null)
                 return;
 
             Channel broadcastChannel = connectionManager.FindChannel(gameCollection.GetGameBroadcastingChannelNameFromIdentifier(localGame));
@@ -2374,7 +2389,10 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
             sb.Append(";");
             sb.Append(GameMode?.UntranslatedUIName ?? string.Empty);
             sb.Append(";");
-            sb.Append(tunnelHandler.CurrentTunnel.Address + ":" + tunnelHandler.CurrentTunnel.Port);
+            if (tunnelHandler.CurrentTunnel != null)
+                sb.Append(tunnelHandler.CurrentTunnel.Address + ":" + tunnelHandler.CurrentTunnel.Port);
+            else
+                sb.Append("0.0.0.0:0");
             sb.Append(";");
             sb.Append(0); // LoadedGameId
             sb.Append(";");
@@ -2522,13 +2540,18 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
 
         private void ApplyMatchmakingOptionPreset(string mode)
         {
-            var def = MatchmakingSettings.Instance.Modes.FirstOrDefault(m => string.Equals(m.UIName, mode, StringComparison.OrdinalIgnoreCase));
-            if (def == null) return;
+            MatchmakingModeDefinition def = MatchmakingSettings.Instance.Modes.FirstOrDefault(m => string.Equals(m.UIName, mode, StringComparison.OrdinalIgnoreCase));
 
-            foreach (var kvp in def.ForceCheckboxes)
+            if (def == null)
+            {
+                Logger.Log($"[Matchmaking] Error: Matchmaking mode '{mode}' not found in settings.");
+                return;
+            }
+
+            foreach (KeyValuePair<string, bool> kvp in def.ForceCheckboxes)
                 SetCheckBoxValue(kvp.Key, kvp.Value);
 
-            foreach (var kvp in def.ForceDropdowns)
+            foreach (KeyValuePair<string, string> kvp in def.ForceDropdowns)
             {
                 if (int.TryParse(kvp.Value, out int idx))
                     SetDropDownValueByIndex(kvp.Key, idx);
@@ -2539,41 +2562,107 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
             // Matchmaking Random Map Selection (Strictly Backend Filtered)
             if (GameModeMaps != null && GameModeMaps.Count > 0)
             {
+                // Reload map definitions from INI to catch any manual changes without restarting
+                MatchmakingMapDefinitions.Instance.Initialize();
+
                 int reqPlayers = def.PlayerCount;
                 var suitableMaps = new List<GameModeMap>();
                 
+                Logger.Log($"[Matchmaking] Processing map selection for mode '{mode}' (req players: {reqPlayers}).");
+
                 // 1. Try to find maps from the defined list in MatchmakingMaps.ini
-                if (MatchmakingMapDefinitions.Instance.ModeMaps.TryGetValue(mode, out var definedMapNames) && definedMapNames.Count > 0)
+                if (MatchmakingMapDefinitions.Instance.ModeMaps.TryGetValue(mode, out List<string> definedMapNames) && definedMapNames.Count > 0)
                 {
-                    suitableMaps = GameModeMaps.Where(m => 
-                        m.Map != null && 
-                        m.Map.MaxPlayers == reqPlayers && 
-                        definedMapNames.Any(dmn => string.Equals(m.Map.Name, dmn, StringComparison.OrdinalIgnoreCase) || string.Equals(m.Map.UntranslatedName, dmn, StringComparison.OrdinalIgnoreCase))
-                    ).ToList();
+                    Logger.Log($"[Matchmaking] Looking for maps in defined INI list: {string.Join(", ", definedMapNames)}");
+
+                    foreach (GameModeMap m in GameModeMaps)
+                    {
+                        if (m.Map == null)
+                            continue;
+
+                        // Flexible matching: check exact name, untranslated name, base file path,
+                        // and also try stripping the "[2]" style player count prefix/suffix often found in RA2 map names.
+                        bool nameMatched = definedMapNames.Any(dmn => 
+                        {
+                            string target = dmn.Trim();
+                            
+                            // Exact matches
+                            if (string.Equals(m.Map.Name, target, StringComparison.OrdinalIgnoreCase) || 
+                                string.Equals(m.Map.UntranslatedName, target, StringComparison.OrdinalIgnoreCase) ||
+                                (m.Map.BaseFilePath != null && string.Equals(m.Map.BaseFilePath, target, StringComparison.OrdinalIgnoreCase)))
+                                return true;
+
+                            // Fuzzy match: Strip "[2] " prefix or similar from both and compare
+                            string cleanMapName = StripMapPrefix(m.Map.Name);
+                            string cleanTarget = StripMapPrefix(target);
+
+                            return string.Equals(cleanMapName, cleanTarget, StringComparison.OrdinalIgnoreCase);
+                        });
+
+                        if (nameMatched)
+                        {
+                            if (m.Map.MaxPlayers == reqPlayers)
+                            {
+                                Logger.Log($"[Matchmaking] Map OK: '{m.Map.Name}' (file: {m.Map.BaseFilePath}) matches INI and player count ({m.Map.MaxPlayers}).");
+                                suitableMaps.Add(m);
+                            }
+                            else
+                            {
+                                Logger.Log($"[Matchmaking] Map REJECTED: '{m.Map.Name}' (file: {m.Map.BaseFilePath}) matches INI but has {m.Map.MaxPlayers} players (Mode needs {reqPlayers}). skipping.");
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    Logger.Log($"[Matchmaking] No maps defined in MatchmakingMaps.ini for mode '{mode}'.");
                 }
                 
                 // 2. Fallback if no matching defined maps were found
                 if (suitableMaps.Count == 0)
                 {
-                    Logger.Log($"[Matchmaking] Warning: Could not find any maps from defined list for {mode}. Falling back to random max_players matching.");
+                    Logger.Log($"[Matchmaking] Warning: No suitable maps from INI found for {mode}. (Target names were: {string.Join(", ", definedMapNames ?? new List<string>())})");
+                    
+                    // Show a few available maps in log for debugging
+                    List<string> sampleMaps = GameModeMaps.Where(m => m.Map != null && m.Map.MaxPlayers == reqPlayers).Take(3).Select(m => $"'{m.Map.Name}'").ToList();
+                    Logger.Log($"[Matchmaking] Debug: Available maps for {reqPlayers} players include: {string.Join(", ", sampleMaps)}...");
+
                     suitableMaps = GameModeMaps.Where(m => m.Map != null && m.Map.MaxPlayers == reqPlayers).ToList();
                 }
 
                 if (suitableMaps.Count > 0)
                 {
                     Random rnd = new Random();
-                    var randomMap = suitableMaps[rnd.Next(suitableMaps.Count)];
+                    GameModeMap randomMap = suitableMaps[rnd.Next(suitableMaps.Count)];
                     ChangeMap(randomMap);
-                    Logger.Log($"[Matchmaking] Backend randomized map to {randomMap.Map.Name} for max players {reqPlayers}");
+                    
+                    // Force the UI to highlight this map in the listbox
+                    RefreshMapSelectionUI();
+
+                    Logger.Log($"[Matchmaking] Map applied: '{randomMap.Map.Name}' (MaxPlayers: {randomMap.Map.MaxPlayers}). UI Refreshed.");
                 }
                 else
                 {
-                    Logger.Log($"[Matchmaking] Error: NO maps found for max players {reqPlayers} in mode {mode}!");
+                    Logger.Log($"[Matchmaking] Error: NO matching maps from INI found for mode '{mode}' with {reqPlayers} players. (Checked: {suitableMaps.Count} maps)");
                 }
             }
         }
 
+        private string StripMapPrefix(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+                return name;
+
+            int idx = name.IndexOf(']');
+
+            if (idx != -1 && idx < 6) // Handles "[2] ", "[8] ", etc.
+                return name.Substring(idx + 1).Trim();
+
+            return name.Trim();
+        }
+
         private void SetCheckBoxValue(string checkBoxName, bool value)
+
         {
             GameLobbyCheckBox checkBox = CheckBoxes.Find(cb =>
                 string.Equals(cb.Name, checkBoxName, StringComparison.OrdinalIgnoreCase));

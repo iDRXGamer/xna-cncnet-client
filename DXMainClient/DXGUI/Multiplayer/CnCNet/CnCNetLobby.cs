@@ -98,6 +98,8 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
         private DarkeningPanel gameCreationPanel;
 
         private Channel currentChatChannel;
+        private DateTime lastMatchmakingClickTime = DateTime.MinValue;
+
 
         private GameCollection gameCollection;
 
@@ -923,11 +925,21 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
         private void BtnMatchmaking_LeftClick(object sender, EventArgs e)
         {
+            if (DateTime.Now - lastMatchmakingClickTime < TimeSpan.FromSeconds(2))
+            {
+                matchmakingLogger?.Info("BtnClickThrottled", "Click ignored due to 2s cooldown");
+                return;
+            }
+
+            lastMatchmakingClickTime = DateTime.Now;
+
             if (gameLobby.Enabled)
             {
+                matchmakingLogger?.Info("BtnClickLeavingLobby", "Leaving lobby before matchmaking toggle");
                 gameLobby.LeaveGameLobby();
-                isInGameRoom = false; // Fix race condition for immediate queue toggle
+                isInGameRoom = false; 
             }
+
             if (gameLoadingLobby.Enabled)
             {
                 gameLoadingLobby.Clear();
@@ -1245,7 +1257,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             bool removedAny = false;
             for (int i = lbGameList.HostedGames.Count - 1; i >= 0; i--)
             {
-                var hostedGame = (HostedCnCNetGame)lbGameList.HostedGames[i];
+                HostedCnCNetGame hostedGame = (HostedCnCNetGame)lbGameList.HostedGames[i];
                 bool channelMatches = !string.IsNullOrWhiteSpace(channelName) &&
                     string.Equals(hostedGame.ChannelName, channelName, StringComparison.OrdinalIgnoreCase);
                 bool roomMatches = !string.IsNullOrWhiteSpace(roomName) &&
@@ -1326,7 +1338,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
                 AddMainChannelNotice($"Match found ({mode}). Joining room...");
 
-                var hostedGame = new HostedCnCNetGame(
+                HostedCnCNetGame hostedGame = new HostedCnCNetGame(
                     channelName,
                     ProgramConstants.CNCNET_PROTOCOL_REVISION,
                     ProgramConstants.GAME_VERSION,

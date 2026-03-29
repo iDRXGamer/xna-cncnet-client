@@ -1,3 +1,5 @@
+#nullable enable
+
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -8,21 +10,22 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 {
     public class MatchmakingModeDefinition
     {
-        public string UIName { get; set; }
+        public string UIName { get; set; } = string.Empty;
         public int PlayerCount { get; set; }
-        public string[] AlliedSideNames { get; set; }
-        public string[] SovietSideNames { get; set; }
-        public string[] AlliedColors { get; set; }
-        public string[] SovietColors { get; set; }
-        public Dictionary<string, bool> ForceCheckboxes { get; set; }
-        public Dictionary<string, string> ForceDropdowns { get; set; }
+        public string[] AlliedSideNames { get; set; } = Array.Empty<string>();
+        public string[] SovietSideNames { get; set; } = Array.Empty<string>();
+        public string[] AlliedColors { get; set; } = Array.Empty<string>();
+        public string[] SovietColors { get; set; } = Array.Empty<string>();
+        public Dictionary<string, bool> ForceCheckboxes { get; set; } = new Dictionary<string, bool>();
+        public Dictionary<string, string> ForceDropdowns { get; set; } = new Dictionary<string, string>();
         public bool AssignTeams { get; set; }
     }
 
     public class MatchmakingSettings
     {
-        private static MatchmakingSettings instance;
-        public static MatchmakingSettings Instance => instance ?? (instance = new MatchmakingSettings());
+        private static MatchmakingSettings? instance;
+
+        public static MatchmakingSettings Instance => instance ??= new MatchmakingSettings();
 
         public List<MatchmakingModeDefinition> Modes { get; private set; }
 
@@ -35,20 +38,24 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
         {
             Modes.Clear();
             string iniPath = ProgramConstants.GamePath + "INI/Matchmaking.ini";
+
             if (!System.IO.File.Exists(iniPath))
             {
                 CreateDefaultSettings(iniPath);
             }
 
-            IniFile ini = new IniFile(iniPath);
-            List<string> modeSections = ini.GetSectionKeys("MatchmakingModes");
+            var ini = new IniFile(iniPath);
+            List<string>? modeSections = ini.GetSectionKeys("MatchmakingModes");
+
             if (modeSections == null || modeSections.Count == 0)
                 return;
 
             foreach (string modeKey in modeSections)
             {
                 string sectionName = ini.GetStringValue("MatchmakingModes", modeKey, string.Empty);
-                if (string.IsNullOrEmpty(sectionName)) continue;
+
+                if (string.IsNullOrEmpty(sectionName))
+                    continue;
 
                 var mode = new MatchmakingModeDefinition();
                 mode.UIName = sectionName;
@@ -57,8 +64,11 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                 // Enforce even players
                 if (mode.PlayerCount % 2 != 0) 
                     mode.PlayerCount++;
-                if (mode.PlayerCount > 8) mode.PlayerCount = 8;
-                if (mode.PlayerCount < 2) mode.PlayerCount = 2;
+
+                if (mode.PlayerCount > 8)
+                    mode.PlayerCount = 8;
+                if (mode.PlayerCount < 2)
+                    mode.PlayerCount = 2;
 
                 string alliedSides = ini.GetStringValue(sectionName, "AlliedSides", "Allies,Allied");
                 mode.AlliedSideNames = alliedSides.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim()).ToArray();
@@ -77,7 +87,8 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                 mode.ForceCheckboxes = new Dictionary<string, bool>();
                 mode.ForceDropdowns = new Dictionary<string, string>();
 
-                List<string> sectionKeys = ini.GetSectionKeys(sectionName);
+                List<string>? sectionKeys = ini.GetSectionKeys(sectionName);
+
                 if (sectionKeys != null)
                 {
                     foreach (string key in sectionKeys)
@@ -101,7 +112,11 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
         {
             try
             {
-                System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path));
+                string? directoryPath = System.IO.Path.GetDirectoryName(path);
+
+                if (!string.IsNullOrEmpty(directoryPath))
+                    System.IO.Directory.CreateDirectory(directoryPath);
+
                 var lines = new List<string>
                 {
                     "[MatchmakingModes]",
@@ -152,6 +167,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                     "cmbGameSpeedCapMultiplayer=0",
                     "AssignTeams=True"
                 };
+
                 System.IO.File.WriteAllLines(path, lines);
             }
             catch (Exception ex)
