@@ -94,6 +94,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
         private XNAClientToggleButton btnGameFilterOptions;
         private XNAClientDropDown ddMatchmakingMode;
+        private XNALabel lblMatchmakingMode;
 
         private DarkeningPanel gameCreationPanel;
 
@@ -389,6 +390,11 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                 tbGameSearch.Y,
                 MatchmakingModeWidth,
                 UIDesignConstants.BUTTON_HEIGHT);
+
+            lblMatchmakingMode = new XNALabel(WindowManager);
+            lblMatchmakingMode.Name = nameof(lblMatchmakingMode);
+            lblMatchmakingMode.FontIndex = 1;
+            lblMatchmakingMode.Text = "MATCH MODE:";
             MatchmakingSettings.Instance.Initialize();
             MatchmakingMapDefinitions.Instance.Initialize();
             foreach (var mode in MatchmakingSettings.Instance.Modes)
@@ -432,6 +438,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             AddChild(lblOnlineCount);
             AddChild(tbGameSearch);
             AddChild(ddMatchmakingMode);
+            AddChild(lblMatchmakingMode);
             AddChild(btnGameSortAlpha);
             AddChild(btnGameFilterOptions);
 
@@ -1042,34 +1049,83 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
         private void LayoutCurrentChannelAndMatchmakingModeControls()
         {
-            if (ddCurrentChannel == null || lblCurrentChannel == null || ddMatchmakingMode == null || lbChatMessages == null || ddColor == null)
+            if (ddCurrentChannel == null || lblCurrentChannel == null || ddMatchmakingMode == null || lbChatMessages == null || ddColor == null || lblMatchmakingMode == null)
                 return;
 
-            int y = ddColor.Y;
+            int y = tbGameSearch != null ? tbGameSearch.Y : ddColor.Y;
+            int rightAlign = lbChatMessages.Right;
 
+            // 1. Color Dropdown (far right)
+            ddColor.ClientRectangle = new Rectangle(
+                rightAlign - 140,
+                y,
+                140,
+                ddColor.Height);
+            int currentLeft = ddColor.X;
+
+            // 2. Current Channel Dropdown
+            currentLeft -= (TopControlsSpacing + CurrentChannelWidth);
             ddCurrentChannel.ClientRectangle = new Rectangle(
-                lbChatMessages.Right - CurrentChannelWidth,
+                currentLeft,
                 y,
                 CurrentChannelWidth,
                 ddCurrentChannel.Height);
 
+            // 3. Current Channel Label
+            // Try to measure the actual width to make it dynamic
+            int labelWidth = lblCurrentChannel.Width > 0 ? lblCurrentChannel.Width : 100;
+            currentLeft -= (labelWidth + TopControlsSpacing);
             lblCurrentChannel.ClientRectangle = new Rectangle(
-                ddCurrentChannel.X - CurrentChannelLabelWidth,
-                ddCurrentChannel.Y + 2,
+                currentLeft,
+                y + 2,
                 0,
                 0);
 
-            int modeX = lblCurrentChannel.X - TopControlsSpacing - MatchmakingModeWidth;
-            int minimumModeX = btnGameFilterOptions != null
-                ? btnGameFilterOptions.Right + TopControlsSpacing
-                : lbGameList.X;
-            modeX = Math.Max(minimumModeX, modeX);
+            // 4. Matchmaking Mode Dropdown
+            // We need to ensure we don't overlap with the left-side controls
+            int leftLimit = btnGameFilterOptions != null ? btnGameFilterOptions.Right + TopControlsSpacing : lbGameList.X;
+            // Also check for online count if visible
+            if (lblOnlineCount != null && lblOnlineCount.Visible)
+                leftLimit = Math.Max(leftLimit, lblOnlineCount.Right + TopControlsSpacing);
+
+            // Position matchmaking mode relative to current channel
+            int matchmakingLabelWidth = lblMatchmakingMode.Width > 0 ? lblMatchmakingMode.Width : 85;
+            int totalSpaceNeeded = MatchmakingModeWidth + matchmakingLabelWidth + (TopControlsSpacing * 2);
+            
+            // If we have enough space to the left of the current channel label
+            int modeDropdownX = lblCurrentChannel.X - TopControlsSpacing - MatchmakingModeWidth;
+            
+            // Safety check: if it overlaps with left side, we might need to push it right or hide things
+            if (modeDropdownX - matchmakingLabelWidth - TopControlsSpacing < leftLimit)
+            {
+                // Not enough space, cap it
+                modeDropdownX = leftLimit + matchmakingLabelWidth + TopControlsSpacing;
+                // If it now overlaps with the right-side controls, we have a tiny resolution
+                if (modeDropdownX + MatchmakingModeWidth > lblCurrentChannel.X)
+                {
+                    // Very tight space, just hide matchmaking label or stack them (complicated)
+                    // For now, let's just let it overlap slightly or hide matchmaking label
+                    lblMatchmakingMode.Visible = false;
+                    modeDropdownX = leftLimit;
+                }
+            }
+            else
+            {
+                lblMatchmakingMode.Visible = true;
+            }
 
             ddMatchmakingMode.ClientRectangle = new Rectangle(
-                modeX,
+                modeDropdownX,
                 y,
                 MatchmakingModeWidth,
                 UIDesignConstants.BUTTON_HEIGHT);
+
+            // 5. Matchmaking Mode Label
+            lblMatchmakingMode.ClientRectangle = new Rectangle(
+                ddMatchmakingMode.X - (lblMatchmakingMode.Visible ? matchmakingLabelWidth + TopControlsSpacing : 0),
+                y + 2,
+                0,
+                0);
         }
 
         private void AddMainChannelNotice(string message) =>
