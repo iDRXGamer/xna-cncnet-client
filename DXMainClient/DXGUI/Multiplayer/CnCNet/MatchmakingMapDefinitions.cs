@@ -24,66 +24,15 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
         public void Initialize()
         {
             ModeMaps.Clear();
-            string iniPath = ProgramConstants.GamePath + "INI/MatchmakingMaps.ini";
+            
+            // 1v1 Maps
+            ModeMaps["1v1"] = new List<string> { "Blood Feud", "May Day", "Dry Heat", "Arena Valley Extreme" };
 
-            if (!System.IO.File.Exists(iniPath))
-            {
-                CreateDefaultMaps(iniPath);
-            }
+            // 2v2 Maps
+            ModeMaps["2v2"] = new List<string> { "Heck Freezes Over", "Tournament A" };
 
-            var ini = new IniFile(iniPath);
-
-            foreach (string section in ini.GetSections())
-            {
-                if (string.IsNullOrEmpty(section))
-                    continue;
-                
-                List<string>? keys = ini.GetSectionKeys(section);
-                if (keys == null)
-                    continue;
-
-                var maps = new List<string>();
-
-                foreach (string key in keys)
-                {
-                    string mapName = ini.GetStringValue(section, key, string.Empty);
-
-                    if (!string.IsNullOrWhiteSpace(mapName))
-                    {
-                        maps.Add(mapName.Trim());
-                    }
-                }
-
-                ModeMaps[section] = maps;
-            }
-        }
-
-        private void CreateDefaultMaps(string path)
-        {
-            try
-            {
-                string? directoryPath = System.IO.Path.GetDirectoryName(path);
-
-                if (!string.IsNullOrEmpty(directoryPath))
-                    System.IO.Directory.CreateDirectory(directoryPath);
-
-                var lines = new List<string>
-                {
-                    "[1v1]",
-                    "Map1=Dry Heat",
-                    "Map2=Arena Valley Extreme",
-                    "",
-                    "[2v2v2v2]",
-                    "Map1=Heck Freezes Over",
-                    "Map2=Snow Valley"
-                };
-
-                System.IO.File.WriteAllLines(path, lines);
-            }
-            catch (Exception ex)
-            {
-                Logger.Log("Failed to create default MatchmakingMaps.ini: " + ex.Message);
-            }
+            // 2v2v2v2 Maps
+            ModeMaps["2v2v2v2"] = new List<string> { "Invasion", "Snow Valley" };
         }
     }
 }
