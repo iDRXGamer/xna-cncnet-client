@@ -153,7 +153,6 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
         private bool ctcpNoTunnelForGamesMessageShown = false;
 
         private MatchmakingService matchmakingService;
-        private MatchmakingLogger matchmakingLogger;
         private readonly HashSet<string> hiddenMatchmakingChannels = new(StringComparer.OrdinalIgnoreCase);
         private readonly bool matchmakingAutoTestEnabled =
             string.Equals(Environment.GetEnvironmentVariable("MM_AUTOTEST"), "1", StringComparison.OrdinalIgnoreCase);
@@ -199,7 +198,6 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             BackgroundTexture = AssetLoader.LoadTexture("cncnetlobbybg.png");
             localGameID = ClientConfiguration.Instance.LocalGame;
             localGame = gameCollection.GameList.Find(g => g.InternalName.ToUpper() == localGameID.ToUpper());
-            matchmakingLogger = new MatchmakingLogger(() => ProgramConstants.PLAYERNAME);
 
             btnMatchmaking = new XNAClientButton(WindowManager);
             btnMatchmaking.Name = nameof(btnMatchmaking);
@@ -408,7 +406,6 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             matchmakingService = new MatchmakingService(
                 random,
                 () => ProgramConstants.PLAYERNAME,
-                matchmakingLogger,
                 GetSelectedMatchmakingMode,
                 CanJoinMatchmakingQueue,
                 CanHostMatchmakingQueue,
@@ -934,7 +931,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
         {
             if (DateTime.Now - lastMatchmakingClickTime < TimeSpan.FromSeconds(2))
             {
-                matchmakingLogger?.Info("BtnClickThrottled", "Click ignored due to 2s cooldown");
+                Logger.Log($"[Matchmaking] { "BtnClickThrottled" }: { "Click ignored due to 2s cooldown" }");
                 return;
             }
 
@@ -942,7 +939,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
             if (gameLobby.Enabled)
             {
-                matchmakingLogger?.Info("BtnClickLeavingLobby", "Leaving lobby before matchmaking toggle");
+                Logger.Log($"[Matchmaking] { "BtnClickLeavingLobby" }: { "Leaving lobby before matchmaking toggle" }");
                 gameLobby.LeaveGameLobby();
                 isInGameRoom = false; 
             }
@@ -969,7 +966,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
         {
             if (isInGameRoom || gameLobby.Enabled || gameLoadingLobby.Enabled || isJoiningGame || ProgramConstants.IsInGame)
             {
-                matchmakingLogger?.Info("CannotJoinQueue", $"isInGameRoom={isInGameRoom}, gameLobby={gameLobby.Enabled}, gameLoadingLobby={gameLoadingLobby.Enabled}, isJoiningGame={isJoiningGame}, IsInGame={ProgramConstants.IsInGame}");
+                Logger.Log($"[Matchmaking] { "CannotJoinQueue" }: { $"isInGameRoom={isInGameRoom}, gameLobby={gameLobby.Enabled}, gameLoadingLobby={gameLoadingLobby.Enabled}, isJoiningGame={isJoiningGame}, IsInGame={ProgramConstants.IsInGame}" }");
                 return false;
             }
             if (isInGameRoom || gameLobby.Enabled || gameLoadingLobby.Enabled || isJoiningGame || ProgramConstants.IsInGame)
@@ -1156,12 +1153,12 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             if (CanJoinMatchmakingQueue())
             {
                 matchmakingAutoTestStarted = true;
-                matchmakingLogger?.Info("AutoTestJoinQueue", "mode=1v1");
+                Logger.Log($"[Matchmaking] { "AutoTestJoinQueue" }: { "mode=1v1" }");
                 matchmakingService?.ToggleQueue();
             }
             else
             {
-                matchmakingLogger?.Warn("AutoTestJoinQueueSkipped", "reason=client_not_ready");
+                Logger.Log($"[Matchmaking] WARNING { "AutoTestJoinQueueSkipped" }: { "reason=client_not_ready" }");
             }
         }
 
@@ -1184,7 +1181,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                 CnCNetTunnel selectedTunnel = tunnelHandler.CurrentTunnel ?? tunnelHandler.Tunnels?.FirstOrDefault();
                 if (selectedTunnel == null)
                 {
-                    matchmakingLogger?.Warn("CreateRoomFailed", "reason=no_tunnel");
+                    Logger.Log($"[Matchmaking] WARNING { "CreateRoomFailed" }: { "reason=no_tunnel" }");
                     AddMainChannelNotice("Matchmaking failed: no tunnel server is available.");
                     return;
                 }
@@ -1198,8 +1195,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                     .ToList();
                 pendingMatchmakingMode = mode;
 
-                matchmakingLogger?.Info("CreateRoomRequested",
-                    $"mode={mode}, maxPlayers={maxPlayers}, participants={string.Join(",", participants)}");
+                Logger.Log($"[Matchmaking] { "CreateRoomRequested" }: { $"mode={mode}, maxPlayers={maxPlayers}, participants={string.Join(",", participants)}" }");
 
                 string previousCreatedChannelName = lastCreatedGameChannelName;
                 Gcw_GameCreated(this, new GameCreationEventArgs(roomName, maxPlayers, string.Empty, selectedTunnel, 0));
@@ -1209,14 +1205,14 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                 {
                     pendingMatchmakingParticipants = null;
                     pendingMatchmakingMode = null;
-                    matchmakingLogger?.Warn("CreateRoomFailed", "reason=no_new_channel_created");
+                    Logger.Log($"[Matchmaking] WARNING { "CreateRoomFailed" }: { "reason=no_new_channel_created" }");
                     AddMainChannelNotice("Matchmaking failed: unable to create a room.");
                     return;
                 }
             }
             catch (Exception ex)
             {
-                matchmakingLogger?.Error("CreateRoomException", ex);
+                Logger.Log($"[Matchmaking] ERROR { "CreateRoomException" }: { ex }");
                 AddMainChannelNotice("Matchmaking failed: unexpected error while creating room.");
             }
         }
@@ -1236,16 +1232,14 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             string commandParameters =
                 $"{pendingMatchmakingMode};{lastCreatedGameChannelName};{lastCreatedGameRoomName};{lastCreatedGamePassword};{lastCreatedGameMaxPlayers};{lastCreatedGameSkillLevel};{lastCreatedGameTunnel.Address};{lastCreatedGameTunnel.Port}";
 
-            matchmakingLogger?.Info("InvitePrepared",
-                $"mode={pendingMatchmakingMode}, host={hostName}, room={lastCreatedGameRoomName}, channel={lastCreatedGameChannelName}, participants={string.Join(",", pendingMatchmakingParticipants)}, messageType={MatchmakingInviteMessageType}, priority={MatchmakingInviteMessagePriority}");
+            Logger.Log($"[Matchmaking] { "InvitePrepared" }: { $"mode={pendingMatchmakingMode}, host={hostName}, room={lastCreatedGameRoomName}, channel={lastCreatedGameChannelName}, participants={string.Join(",", pendingMatchmakingParticipants)}, messageType={MatchmakingInviteMessageType}, priority={MatchmakingInviteMessagePriority}" }");
 
             foreach (string participant in pendingMatchmakingParticipants)
             {
                 if (string.Equals(participant, hostName, StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(participant, ProgramConstants.PLAYERNAME, StringComparison.OrdinalIgnoreCase))
                 {
-                    matchmakingLogger?.Info("InviteSkippedHost",
-                        $"mode={pendingMatchmakingMode}, host={hostName}, participant={participant}, room={lastCreatedGameRoomName}, channel={lastCreatedGameChannelName}");
+                    Logger.Log($"[Matchmaking] { "InviteSkippedHost" }: { $"mode={pendingMatchmakingMode}, host={hostName}, participant={participant}, room={lastCreatedGameRoomName}, channel={lastCreatedGameChannelName}" }");
                     continue;
                 }
 
@@ -1253,12 +1247,10 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                     $"PRIVMSG {participant} :\u0001{MatchmakingService.PrivateJoinCommandName} {commandParameters}\u0001",
                     MatchmakingInviteMessageType, MatchmakingInviteMessagePriority));
 
-                matchmakingLogger?.Info("InviteSent",
-                    $"mode={pendingMatchmakingMode}, host={hostName}, participant={participant}, room={lastCreatedGameRoomName}, channel={lastCreatedGameChannelName}, messageType={MatchmakingInviteMessageType}, priority={MatchmakingInviteMessagePriority}");
+                Logger.Log($"[Matchmaking] { "InviteSent" }: { $"mode={pendingMatchmakingMode}, host={hostName}, participant={participant}, room={lastCreatedGameRoomName}, channel={lastCreatedGameChannelName}, messageType={MatchmakingInviteMessageType}, priority={MatchmakingInviteMessagePriority}" }");
             }
 
-            matchmakingLogger?.Info("InvitesSent",
-                $"mode={pendingMatchmakingMode}, room={lastCreatedGameRoomName}, channel={lastCreatedGameChannelName}, participants={string.Join(",", pendingMatchmakingParticipants)}");
+            Logger.Log($"[Matchmaking] { "InvitesSent" }: { $"mode={pendingMatchmakingMode}, room={lastCreatedGameRoomName}, channel={lastCreatedGameChannelName}, participants={string.Join(",", pendingMatchmakingParticipants)}" }");
 
             AddMainChannelNotice($"Match found ({pendingMatchmakingMode}). Room created on {hostName}.");
 
@@ -1273,7 +1265,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
             if (matchmakingChannel == null)
             {
-                matchmakingLogger?.Warn("QueueCommandDropped", $"reason=missing_channel,payload={payload}");
+                Logger.Log($"[Matchmaking] WARNING { "QueueCommandDropped" }: { $"reason=missing_channel,payload={payload}" }");
                 return;
             }
 
@@ -1281,8 +1273,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                 $"{MatchmakingService.ChannelCommandName} {payload}",
                 MatchmakingQueueMessageType, MatchmakingQueueMessagePriority);
 
-            matchmakingLogger?.Info("QueueCommandSent",
-                $"channel={matchmakingChannel.ChannelName}, payload={payload}, messageType={MatchmakingQueueMessageType}, priority={MatchmakingQueueMessagePriority}");
+            Logger.Log($"[Matchmaking] { "QueueCommandSent" }: { $"channel={matchmakingChannel.ChannelName}, payload={payload}, messageType={MatchmakingQueueMessageType}, priority={MatchmakingQueueMessagePriority}" }");
         }
 
         private static bool IsLikelyMatchmakingRoomName(string roomName)
@@ -1329,8 +1320,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             if (removedAny)
                 SortAndRefreshHostedGames();
 
-            matchmakingLogger?.Info("HiddenRoomTracked",
-                $"mode={mode}, channel={channelName}, room={roomName}");
+            Logger.Log($"[Matchmaking] { "HiddenRoomTracked" }: { $"mode={mode}, channel={channelName}, room={roomName}" }");
         }
 
         private void HandleMatchmakingRoomInvitation(string sender, string argumentsString)
@@ -1339,13 +1329,13 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             {
                 if (!CanReceiveInvitationMessagesFrom(sender))
                 {
-                    matchmakingLogger?.Info("JoinInvitationIgnored", $"reason=sender_not_allowed,sender={sender}");
+                    Logger.Log($"[Matchmaking] { "JoinInvitationIgnored" }: { $"reason=sender_not_allowed,sender={sender}" }");
                     return;
                 }
 
                 if (isInGameRoom || gameLobby.Enabled || gameLoadingLobby.Enabled || isJoiningGame || ProgramConstants.IsInGame)
                 {
-                    matchmakingLogger?.Info("JoinInvitationIgnored", $"reason=already_in_room_or_joining,sender={sender}");
+                    Logger.Log($"[Matchmaking] { "JoinInvitationIgnored" }: { $"reason=already_in_room_or_joining,sender={sender}" }");
                     return;
                 }
 
@@ -1371,20 +1361,19 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
                 TrackHiddenMatchmakingRoom(channelName, roomName, mode);
 
-                matchmakingLogger?.Info("InviteReceived",
-                    $"sender={sender}, mode={mode}, room={roomName}, channel={channelName}");
+                Logger.Log($"[Matchmaking] { "InviteReceived" }: { $"sender={sender}, mode={mode}, room={roomName}, channel={channelName}" }");
 
                 CnCNetTunnel tunnel = FindTunnelByAddressAndPort(tunnelAddress, tunnelPort);
                 if (tunnel == null)
                 {
-                    matchmakingLogger?.Warn("JoinInvitationRejected", $"reason=tunnel_unavailable,address={tunnelAddress},port={tunnelPort}");
+                    Logger.Log($"[Matchmaking] WARNING { "JoinInvitationRejected" }: { $"reason=tunnel_unavailable,address={tunnelAddress},port={tunnelPort}" }");
                     AddMainChannelNotice($"Matchmaking failed: tunnel {tunnelAddress}:{tunnelPort} is unavailable.");
                     return;
                 }
 
                 if (localGame == null)
                 {
-                    matchmakingLogger?.Warn("JoinInvitationRejected", "reason=missing_local_game");
+                    Logger.Log($"[Matchmaking] WARNING { "JoinInvitationRejected" }: { "reason=missing_local_game" }");
                     AddMainChannelNotice("Matchmaking failed: local game definition is missing.");
                     return;
                 }
@@ -1416,16 +1405,13 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                     Incompatible = false
                 };
 
-                matchmakingLogger?.Info("JoinInvitationAccepted",
-                    $"sender={sender}, mode={mode}, channel={channelName}, room={roomName}");
+                Logger.Log($"[Matchmaking] { "JoinInvitationAccepted" }: { $"sender={sender}, mode={mode}, channel={channelName}, room={roomName}" }");
 
-                matchmakingLogger?.Info("JoinGameStarted",
-                    $"source=matchmaking_invite, host={sender}, mode={mode}, channel={channelName}, room={roomName}");
+                Logger.Log($"[Matchmaking] { "JoinGameStarted" }: { $"source=matchmaking_invite, host={sender}, mode={mode}, channel={channelName}, room={roomName}" }");
 
                 gameLobby.SetMatchmakingMode(mode);
                 bool joinStarted = JoinGame(hostedGame, password, connectionManager.MainChannel);
-                matchmakingLogger?.Info("JoinGameResult",
-                    $"source=matchmaking_invite, host={sender}, mode={mode}, channel={channelName}, room={roomName}, success={joinStarted}");
+                Logger.Log($"[Matchmaking] { "JoinGameResult" }: { $"source=matchmaking_invite, host={sender}, mode={mode}, channel={channelName}, room={roomName}, success={joinStarted}" }");
 
                 if (!joinStarted)
                 {
@@ -1435,7 +1421,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             }
             catch (Exception ex)
             {
-                matchmakingLogger?.Error("JoinInvitationException", ex);
+                Logger.Log($"[Matchmaking] ERROR { "JoinInvitationException" }: { ex }");
                 AddMainChannelNotice("Matchmaking failed: unexpected error while joining room.");
             }
         }
@@ -1682,13 +1668,12 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                 if (!string.IsNullOrEmpty(pendingMatchmakingMode))
                 {
                     bool presetApplied = gameLobby.ApplyMatchmakingHostPreset(pendingMatchmakingMode);
-                    matchmakingLogger?.Info("MatchmakingPresetApplied",
-                        $"mode={pendingMatchmakingMode}, success={presetApplied}");
+                    Logger.Log($"[Matchmaking] { "MatchmakingPresetApplied" }: { $"mode={pendingMatchmakingMode}, success={presetApplied}" }");
                 }
 
                 isInGameRoom = true;
                 SetLogOutButtonText();
-                matchmakingLogger?.Info("JoinedGameRoom", $"channel={gameChannel.ChannelName}, room={gameChannel.UIName}");
+                Logger.Log($"[Matchmaking] { "JoinedGameRoom" }: { $"channel={gameChannel.ChannelName}, room={gameChannel.UIName}" }");
                 TrySendMatchmakingParticipantsToRoom(ProgramConstants.PLAYERNAME);
             }
         }
@@ -1761,8 +1746,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             lastCreatedGameMaxPlayers = e.MaxPlayers;
             lastCreatedGameSkillLevel = e.SkillLevel;
 
-            matchmakingLogger?.Info("RoomCreated",
-                $"channel={channelName}, room={e.GameRoomName}, maxPlayers={e.MaxPlayers}, tunnel={e.Tunnel?.Address}:{e.Tunnel?.Port}");
+            Logger.Log($"[Matchmaking] { "RoomCreated" }: { $"channel={channelName}, room={e.GameRoomName}, maxPlayers={e.MaxPlayers}, tunnel={e.Tunnel?.Address}:{e.Tunnel?.Port}" }");
 
             if (!string.IsNullOrEmpty(pendingMatchmakingMode))
                 TrackHiddenMatchmakingRoom(channelName, e.GameRoomName, pendingMatchmakingMode);
@@ -1934,7 +1918,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             CnCNetGameCheck.Instance.InitializeService(gameCheckCancellation);
 
             if (matchmakingAutoTestEnabled)
-                matchmakingLogger?.Info("AutoTestEnabled", "MM_AUTOTEST=1");
+                Logger.Log($"[Matchmaking] { "AutoTestEnabled" }: { "MM_AUTOTEST=1" }");
         }
 
         private void ConnectionManager_PrivateCTCPReceived(object sender, PrivateCTCPEventArgs e)
@@ -2295,8 +2279,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                         SortAndRefreshHostedGames();
                     }
 
-                    matchmakingLogger?.Info("HiddenRoomFiltered",
-                        $"host={e.UserName}, channel={gameRoomChannelName}, room={gameRoomDisplayName}");
+                    Logger.Log($"[Matchmaking] { "HiddenRoomFiltered" }: { $"host={e.UserName}, channel={gameRoomChannelName}, room={gameRoomDisplayName}" }");
                     return;
                 }
 

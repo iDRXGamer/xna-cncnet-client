@@ -14,25 +14,55 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
         public static MatchmakingMapDefinitions Instance => instance ??= new MatchmakingMapDefinitions();
 
-        public Dictionary<string, List<string>> ModeMaps { get; private set; }
+        public Dictionary<string, List<string>> ModeMapHashes { get; private set; }
 
         private MatchmakingMapDefinitions()
         {
-            ModeMaps = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            ModeMapHashes = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         }
 
         public void Initialize()
         {
-            ModeMaps.Clear();
+            ModeMapHashes.Clear();
             
-            // 1v1 Maps
-            ModeMaps["1v1"] = new List<string> { "Blood Feud", "May Day", "Dry Heat", "Arena Valley Extreme" };
+            string iniPath = SafePath.CombineFilePath(ProgramConstants.GamePath, "INI", "MatchmakingMaps.ini");
+            var fileInfo = SafePath.GetFile(iniPath);
+            if (!fileInfo.Exists)
+            {
+                Logger.Log($"[Matchmaking] Warning: Configuration file not found at {iniPath}. Map pools will be empty.");
+                return;
+            }
 
-            // 2v2 Maps
-            ModeMaps["2v2"] = new List<string> { "Heck Freezes Over", "Tournament A" };
+            IniFile ini = new IniFile(iniPath);
+            var sections = ini.GetSections();
+            
+            if (sections == null || sections.Count == 0)
+            {
+                Logger.Log($"[Matchmaking] Warning: No sections defined in {iniPath}. Map pools will be empty.");
+                return;
+            }
 
-            // 2v2v2v2 Maps
-            ModeMaps["2v2v2v2"] = new List<string> { "Invasion", "Snow Valley" };
+            foreach (string section in sections)
+            {
+                var keys = ini.GetSectionKeys(section);
+                if (keys != null && keys.Count > 0)
+                {
+                    List<string> mapHashes = new List<string>();
+                    foreach (string key in keys)
+                    {
+                        string hash = ini.GetStringValue(section, key, string.Empty);
+                        if (!string.IsNullOrEmpty(hash))
+                        {
+                            mapHashes.Add(hash);
+                        }
+                    }
+                    if (mapHashes.Count > 0)
+                    {
+                        ModeMapHashes[section] = mapHashes;
+                        Logger.Log($"[Matchmaking] Loaded map pool for mode [{section}] with {mapHashes.Count} maps.");
+                    }
+                }
+            }
         }
     }
 }

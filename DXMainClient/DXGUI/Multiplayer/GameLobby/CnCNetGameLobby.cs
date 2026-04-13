@@ -2553,10 +2553,19 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
 
             foreach (KeyValuePair<string, string> kvp in def.ForceDropdowns)
             {
-                if (int.TryParse(kvp.Value, out int idx))
+                // Prioritize matching by Text (e.g. "10000") over Index
+                GameLobbyDropDown dd = FindDropDown(kvp.Key);
+                if (dd == null) continue;
+
+                int textIndex = dd.Items.FindIndex(item => string.Equals(item.Text?.Trim(), kvp.Value, StringComparison.OrdinalIgnoreCase));
+                if (textIndex >= 0)
+                {
+                    SetDropDownValueByIndex(kvp.Key, textIndex);
+                }
+                else if (int.TryParse(kvp.Value, out int idx))
+                {
                     SetDropDownValueByIndex(kvp.Key, idx);
-                else
-                    SetDropDownValueByText(kvp.Key, kvp.Value);
+                }
             }
 
             // Matchmaking Random Map Selection (Strictly Backend Filtered)
@@ -2571,57 +2580,41 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
                 Logger.Log($"[Matchmaking] Processing map selection for mode '{mode}' (req players: {reqPlayers}).");
 
                 // 1. Try to find maps from the defined list in MatchmakingMaps.ini
-                if (MatchmakingMapDefinitions.Instance.ModeMaps.TryGetValue(mode, out List<string> definedMapNames) && definedMapNames.Count > 0)
+                if (MatchmakingMapDefinitions.Instance.ModeMapHashes.TryGetValue(mode, out List<string> definedMapHashes) && definedMapHashes.Count > 0)
                 {
-                    Logger.Log($"[Matchmaking] Looking for maps in defined INI list: {string.Join(", ", definedMapNames)}");
+                    Logger.Log($"[Matchmaking] Looking for maps in defined INI list by Hash: {string.Join(", ", definedMapHashes)}");
 
                     foreach (GameModeMap m in GameModeMaps)
                     {
-                        if (m.Map == null)
+                        if (m.Map == null || string.IsNullOrEmpty(m.Map.SHA1))
                             continue;
 
-                        // Flexible matching: check exact name, untranslated name, base file path,
-                        // and also try stripping the "[2]" style player count prefix/suffix often found in RA2 map names.
-                        bool nameMatched = definedMapNames.Any(dmn => 
-                        {
-                            string target = dmn.Trim();
-                            
-                            // Exact matches
-                            if (string.Equals(m.Map.Name, target, StringComparison.OrdinalIgnoreCase) || 
-                                string.Equals(m.Map.UntranslatedName, target, StringComparison.OrdinalIgnoreCase) ||
-                                (m.Map.BaseFilePath != null && string.Equals(m.Map.BaseFilePath, target, StringComparison.OrdinalIgnoreCase)))
-                                return true;
+                        // Exact hash match
+                        bool hashMatched = definedMapHashes.Any(hash => string.Equals(m.Map.SHA1, hash.Trim(), StringComparison.OrdinalIgnoreCase));
 
-                            // Fuzzy match: Strip "[2] " prefix or similar from both and compare
-                            string cleanMapName = StripMapPrefix(m.Map.Name);
-                            string cleanTarget = StripMapPrefix(target);
-
-                            return string.Equals(cleanMapName, cleanTarget, StringComparison.OrdinalIgnoreCase);
-                        });
-
-                        if (nameMatched)
+                        if (hashMatched)
                         {
                             if (m.Map.MaxPlayers == reqPlayers)
                             {
-                                Logger.Log($"[Matchmaking] Map OK: '{m.Map.Name}' (file: {m.Map.BaseFilePath}) matches INI and player count ({m.Map.MaxPlayers}).");
+                                Logger.Log($"[Matchmaking] Map OK: '{m.Map.Name}' (file: {m.Map.BaseFilePath}) matches INI hash and player count ({m.Map.MaxPlayers}).");
                                 suitableMaps.Add(m);
                             }
                             else
                             {
-                                Logger.Log($"[Matchmaking] Map REJECTED: '{m.Map.Name}' (file: {m.Map.BaseFilePath}) matches INI but has {m.Map.MaxPlayers} players (Mode needs {reqPlayers}). skipping.");
+                                Logger.Log($"[Matchmaking] Map REJECTED: '{m.Map.Name}' (file: {m.Map.BaseFilePath}) matches INI hash but has {m.Map.MaxPlayers} players (Mode needs {reqPlayers}). skipping.");
                             }
                         }
                     }
                 }
                 else
                 {
-                    Logger.Log($"[Matchmaking] No maps defined in MatchmakingMaps.ini for mode '{mode}'.");
+                    Logger.Log($"[Matchmaking] No map hashes defined in MatchmakingMaps.ini for mode '{mode}'.");
                 }
                 
                 // 2. Fallback if no matching defined maps were found
                 if (suitableMaps.Count == 0)
                 {
-                    Logger.Log($"[Matchmaking] Warning: No suitable maps from INI found for {mode}. (Target names were: {string.Join(", ", definedMapNames ?? new List<string>())})");
+                    Logger.Log($"[Matchmaking] Warning: No suitable maps from INI found for {mode}. (Target hashes were: {string.Join(", ", definedMapHashes ?? new List<string>())})");
                     
                     // Show a few available maps in log for debugging
                     List<string> sampleMaps = GameModeMaps.Where(m => m.Map != null && m.Map.MaxPlayers == reqPlayers).Take(3).Select(m => $"'{m.Map.Name}'").ToList();
