@@ -75,7 +75,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             string formatted = string.IsNullOrEmpty(details) 
                 ? $"[MM][{level}][{localPlayerName}] {eventName}" 
                 : $"[MM][{level}][{localPlayerName}] {eventName} :: {details}";
-            ClientCore.Logger.Log(formatted);
+            Rampastring.Tools.Logger.Log(formatted);
         }
 
         private void Info(string eventName, string? details = null) => Log("INFO", eventName, details);

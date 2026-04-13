@@ -25,14 +25,44 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
         {
             ModeMapHashes.Clear();
             
-            // 1v1 Map Hashes
-            ModeMapHashes["1v1"] = new List<string> { "<SHA1_BLOOD_FEUD>", "<SHA1_MAY_DAY>", "<SHA1_DRY_HEAT>", "<SHA1_ARENA_VALLEY>" };
+            string iniPath = SafePath.CombineFilePath(ProgramConstants.GamePath, "INI", "MatchmakingMaps.ini");
+            var fileInfo = SafePath.GetFile(iniPath);
+            if (!fileInfo.Exists)
+            {
+                Logger.Log($"[Matchmaking] Warning: Configuration file not found at {iniPath}. Map pools will be empty.");
+                return;
+            }
 
-            // 2v2 Map Hashes
-            ModeMapHashes["2v2"] = new List<string> { "<SHA1_HECK_FREEZES>", "<SHA1_TOURNAMENT_A>" };
+            IniFile ini = new IniFile(iniPath);
+            var sections = ini.GetSections();
+            
+            if (sections == null || sections.Count == 0)
+            {
+                Logger.Log($"[Matchmaking] Warning: No sections defined in {iniPath}. Map pools will be empty.");
+                return;
+            }
 
-            // 2v2v2v2 Map Hashes
-            ModeMapHashes["2v2v2v2"] = new List<string> { "<SHA1_INVASION>", "<SHA1_SNOW_VALLEY>" };
+            foreach (string section in sections)
+            {
+                var keys = ini.GetSectionKeys(section);
+                if (keys != null && keys.Count > 0)
+                {
+                    List<string> mapHashes = new List<string>();
+                    foreach (string key in keys)
+                    {
+                        string hash = ini.GetStringValue(section, key, string.Empty);
+                        if (!string.IsNullOrEmpty(hash))
+                        {
+                            mapHashes.Add(hash);
+                        }
+                    }
+                    if (mapHashes.Count > 0)
+                    {
+                        ModeMapHashes[section] = mapHashes;
+                        Logger.Log($"[Matchmaking] Loaded map pool for mode [{section}] with {mapHashes.Count} maps.");
+                    }
+                }
+            }
         }
     }
 }

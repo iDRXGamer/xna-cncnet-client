@@ -2553,10 +2553,19 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
 
             foreach (KeyValuePair<string, string> kvp in def.ForceDropdowns)
             {
-                if (int.TryParse(kvp.Value, out int idx))
+                // Prioritize matching by Text (e.g. "10000") over Index
+                GameLobbyDropDown dd = FindDropDown(kvp.Key);
+                if (dd == null) continue;
+
+                int textIndex = dd.Items.FindIndex(item => string.Equals(item.Text?.Trim(), kvp.Value, StringComparison.OrdinalIgnoreCase));
+                if (textIndex >= 0)
+                {
+                    SetDropDownValueByIndex(kvp.Key, textIndex);
+                }
+                else if (int.TryParse(kvp.Value, out int idx))
+                {
                     SetDropDownValueByIndex(kvp.Key, idx);
-                else
-                    SetDropDownValueByText(kvp.Key, kvp.Value);
+                }
             }
 
             // Matchmaking Random Map Selection (Strictly Backend Filtered)

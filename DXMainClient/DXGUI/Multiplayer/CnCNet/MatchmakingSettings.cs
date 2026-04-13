@@ -38,66 +38,76 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
         {
             Modes.Clear();
             
-            // 1. 1v1 Mode
-            var mode1v1 = new MatchmakingModeDefinition
+            string iniPath = SafePath.CombineFilePath(ProgramConstants.GamePath, "INI", "Matchmaking.ini");
+            var fileInfo = SafePath.GetFile(iniPath);
+            if (!fileInfo.Exists)
             {
-                UIName = "1v1",
-                PlayerCount = 2,
-                AlliedSideNames = new[] { "Allies", "Allied" },
-                SovietSideNames = new[] { "Soviets", "Soviet" },
-                AlliedColors = new[] { "Blue", "Green", "Cyan", "Yellow" },
-                SovietColors = new[] { "Red", "Orange", "Purple", "Pink" },
-                AssignTeams = false
-            };
-            AddStandardForces(mode1v1);
-            Modes.Add(mode1v1);
+                Logger.Log($"[Matchmaking] Warning: Configuration file not found at {iniPath}. Matchmaking modes will be empty.");
+                return;
+            }
 
-            // 2. 2v2 Mode
-            var mode2v2 = new MatchmakingModeDefinition
+            IniFile ini = new IniFile(iniPath);
+            List<string> modeKeys = ini.GetSectionKeys("MatchmakingModes");
+            
+            if (modeKeys == null || modeKeys.Count == 0)
             {
-                UIName = "2v2",
-                PlayerCount = 4,
-                AlliedSideNames = new[] { "Allies", "Allied" },
-                SovietSideNames = new[] { "Soviets", "Soviet" },
-                AlliedColors = new[] { "Blue", "Green", "Cyan", "Yellow" },
-                SovietColors = new[] { "Red", "Orange", "Purple", "Pink" },
-                AssignTeams = true
-            };
-            AddStandardForces(mode2v2);
-            Modes.Add(mode2v2);
+                Logger.Log($"[Matchmaking] Warning: No modes defined in [MatchmakingModes] section of {iniPath}.");
+                return;
+            }
 
-            // 3. 2v2v2v2 Mode
-            var mode2v2v2v2 = new MatchmakingModeDefinition
+            foreach (string key in modeKeys)
             {
-                UIName = "2v2v2v2",
-                PlayerCount = 8,
-                AlliedSideNames = new[] { "Allies", "Allied" },
-                SovietSideNames = new[] { "Soviets", "Soviet" },
-                AlliedColors = new[] { "Blue", "Green", "Cyan", "Yellow" },
-                SovietColors = new[] { "Red", "Orange", "Purple", "Pink" },
-                AssignTeams = true
-            };
-            AddStandardForces(mode2v2v2v2);
-            Modes.Add(mode2v2v2v2);
-        }
+                string modeSection = ini.GetStringValue("MatchmakingModes", key, string.Empty);
+                if (string.IsNullOrEmpty(modeSection) || !ini.SectionExists(modeSection))
+                {
+                    Logger.Log($"[Matchmaking] Warning: Mode section [{modeSection}] is empty or completely missing. Skipping.");
+                    continue;
+                }
+                
+                var mode = new MatchmakingModeDefinition();
+                mode.UIName = ini.GetStringValue(modeSection, "UIName", string.Empty);
+                mode.PlayerCount = ini.GetIntValue(modeSection, "PlayerCount", 2);
+                mode.AssignTeams = ini.GetBooleanValue(modeSection, "AssignTeams", false);
+                
+                string alliedSides = ini.GetStringValue(modeSection, "AlliedSideNames", string.Empty);
+                mode.AlliedSideNames = string.IsNullOrEmpty(alliedSides) ? Array.Empty<string>() : alliedSides.Split(',').Select(s => s.Trim()).ToArray();
+                
+                string sovietSides = ini.GetStringValue(modeSection, "SovietSideNames", string.Empty);
+                mode.SovietSideNames = string.IsNullOrEmpty(sovietSides) ? Array.Empty<string>() : sovietSides.Split(',').Select(s => s.Trim()).ToArray();
+                
+                string alliedColors = ini.GetStringValue(modeSection, "AlliedColors", string.Empty);
+                mode.AlliedColors = string.IsNullOrEmpty(alliedColors) ? Array.Empty<string>() : alliedColors.Split(',').Select(s => s.Trim()).ToArray();
+                
+                string sovietColors = ini.GetStringValue(modeSection, "SovietColors", string.Empty);
+                mode.SovietColors = string.IsNullOrEmpty(sovietColors) ? Array.Empty<string>() : sovietColors.Split(',').Select(s => s.Trim()).ToArray();
 
-        private void AddStandardForces(MatchmakingModeDefinition mode)
-        {
-            mode.ForceCheckboxes["chkShortGame"] = true;
-            mode.ForceCheckboxes["chkRedeplMCV"] = true;
-            mode.ForceCheckboxes["chkAutoRepair"] = false;
-            mode.ForceCheckboxes["chkMultiEng"] = false;
-            mode.ForceCheckboxes["chkIngameAllying"] = true;
-            mode.ForceCheckboxes["chkDestrBridges"] = true;
-            mode.ForceCheckboxes["chkBuildOffAlly"] = true;
-            mode.ForceCheckboxes["chkCrates"] = false;
-            mode.ForceCheckboxes["chkDisableGameSpeed"] = true;
-            mode.ForceCheckboxes["chkSuperWeapons"] = false;
-            mode.ForceCheckboxes["chkNoYuri"] = true;
+                // Read Checkboxes
+                string cbSection = modeSection + "_ForceCheckboxes";
+                if (ini.SectionExists(cbSection))
+                {
+                    var cbKeys = ini.GetSectionKeys(cbSection);
+                    if (cbKeys != null)
+                    {
+                        foreach (var cbKey in cbKeys)
+                            mode.ForceCheckboxes[cbKey] = ini.GetBooleanValue(cbSection, cbKey, false);
+                    }
+                }
 
-            mode.ForceDropdowns["cmbCredits"] = "10000";
-            mode.ForceDropdowns["cmbStartingUnits"] = "0";
-            mode.ForceDropdowns["cmbGameSpeedCapMultiplayer"] = "0";
+                // Read Dropdowns
+                string ddSection = modeSection + "_ForceDropdowns";
+                if (ini.SectionExists(ddSection))
+                {
+                    var ddKeys = ini.GetSectionKeys(ddSection);
+                    if (ddKeys != null)
+                    {
+                        foreach (var ddKey in ddKeys)
+                            mode.ForceDropdowns[ddKey] = ini.GetStringValue(ddSection, ddKey, string.Empty);
+                    }
+                }
+                
+                Modes.Add(mode);
+                Logger.Log($"[Matchmaking] Loaded mode: {mode.UIName} ({mode.PlayerCount} players).");
+            }
         }
     }
 }
