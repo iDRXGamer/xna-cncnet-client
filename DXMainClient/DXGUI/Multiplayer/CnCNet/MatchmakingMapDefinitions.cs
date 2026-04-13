@@ -14,25 +14,25 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
         public static MatchmakingMapDefinitions Instance => instance ??= new MatchmakingMapDefinitions();
 
-        public Dictionary<string, List<string>> ModeMaps { get; private set; }
+        public Dictionary<string, List<string>> ModeMapHashes { get; private set; }
 
         private MatchmakingMapDefinitions()
         {
-            ModeMaps = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            ModeMapHashes = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         }
 
         public void Initialize()
         {
-            ModeMaps.Clear();
+            ModeMapHashes.Clear();
             
-            // 1v1 Maps
-            ModeMaps["1v1"] = new List<string> { "Blood Feud", "May Day", "Dry Heat", "Arena Valley Extreme" };
+            // 1v1 Map Hashes
+            ModeMapHashes["1v1"] = new List<string> { "<SHA1_BLOOD_FEUD>", "<SHA1_MAY_DAY>", "<SHA1_DRY_HEAT>", "<SHA1_ARENA_VALLEY>" };
 
-            // 2v2 Maps
-            ModeMaps["2v2"] = new List<string> { "Heck Freezes Over", "Tournament A" };
+            // 2v2 Map Hashes
+            ModeMapHashes["2v2"] = new List<string> { "<SHA1_HECK_FREEZES>", "<SHA1_TOURNAMENT_A>" };
 
-            // 2v2v2v2 Maps
-            ModeMaps["2v2v2v2"] = new List<string> { "Invasion", "Snow Valley" };
+            // 2v2v2v2 Map Hashes
+            ModeMapHashes["2v2v2v2"] = new List<string> { "<SHA1_INVASION>", "<SHA1_SNOW_VALLEY>" };
         }
     }
 }

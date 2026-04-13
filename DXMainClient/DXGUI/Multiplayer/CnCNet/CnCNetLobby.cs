@@ -153,7 +153,6 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
         private bool ctcpNoTunnelForGamesMessageShown = false;
 
         private MatchmakingService matchmakingService;
-        private MatchmakingLogger matchmakingLogger;
         private readonly HashSet<string> hiddenMatchmakingChannels = new(StringComparer.OrdinalIgnoreCase);
         private readonly bool matchmakingAutoTestEnabled =
             string.Equals(Environment.GetEnvironmentVariable("MM_AUTOTEST"), "1", StringComparison.OrdinalIgnoreCase);
@@ -199,7 +198,6 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             BackgroundTexture = AssetLoader.LoadTexture("cncnetlobbybg.png");
             localGameID = ClientConfiguration.Instance.LocalGame;
             localGame = gameCollection.GameList.Find(g => g.InternalName.ToUpper() == localGameID.ToUpper());
-            matchmakingLogger = new MatchmakingLogger(() => ProgramConstants.PLAYERNAME);
 
             btnMatchmaking = new XNAClientButton(WindowManager);
             btnMatchmaking.Name = nameof(btnMatchmaking);
@@ -408,7 +406,6 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             matchmakingService = new MatchmakingService(
                 random,
                 () => ProgramConstants.PLAYERNAME,
-                matchmakingLogger,
                 GetSelectedMatchmakingMode,
                 CanJoinMatchmakingQueue,
                 CanHostMatchmakingQueue,
