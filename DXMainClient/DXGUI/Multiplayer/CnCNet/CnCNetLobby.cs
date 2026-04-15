@@ -37,7 +37,8 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             CnCNetGameLobby gameLobby, CnCNetGameLoadingLobby gameLoadingLobby,
             TopBar topBar, PrivateMessagingWindow pmWindow, TunnelHandler tunnelHandler,
             GameCollection gameCollection, CnCNetUserData cncnetUserData,
-            OptionsWindow optionsWindow, MapLoader mapLoader, Random random)
+            OptionsWindow optionsWindow, MatchFoundWindow matchFoundWindow,
+            MapLoader mapLoader, Random random)
             : base(windowManager)
         {
             this.connectionManager = connectionManager;
@@ -49,6 +50,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             this.gameCollection = gameCollection;
             this.cncnetUserData = cncnetUserData;
             this.optionsWindow = optionsWindow;
+            this.matchFoundWindow = matchFoundWindow;
             this.mapLoader = mapLoader;
             this.random = random;
 
@@ -62,11 +64,11 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             topBar.LogoutEvent += LogoutEvent;
         }
 
-        private MapLoader mapLoader;
-
         private CnCNetManager connectionManager;
         private CnCNetUserData cncnetUserData;
         private readonly OptionsWindow optionsWindow;
+        private readonly MatchFoundWindow matchFoundWindow;
+        private readonly MapLoader mapLoader;
 
         private PlayerListBox lbPlayerList;
         private ChatListBox lbChatMessages;
@@ -125,6 +127,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
         private PrivateMessagingWindow pmWindow;
 
+        private XNAPanel passwordRequestWindowPanel;
         private PasswordRequestWindow passwordRequestWindow;
 
         private bool isInGameRoom = false;
@@ -1198,6 +1201,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                 Logger.Log($"[Matchmaking] { "CreateRoomRequested" }: { $"mode={mode}, maxPlayers={maxPlayers}, participants={string.Join(",", participants)}" }");
 
                 string previousCreatedChannelName = lastCreatedGameChannelName;
+                matchFoundWindow.Show();
                 Gcw_GameCreated(this, new GameCreationEventArgs(roomName, maxPlayers, string.Empty, selectedTunnel, 0));
 
                 if (pendingMatchmakingParticipants != null &&
@@ -1383,6 +1387,8 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
                 AddMainChannelNotice($"Match found ({mode}). Joining room...");
 
+                matchFoundWindow.Show();
+
                 HostedCnCNetGame hostedGame = new HostedCnCNetGame(
                     channelName,
                     ProgramConstants.CNCNET_PROTOCOL_REVISION,
@@ -1415,6 +1421,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
                 if (!joinStarted)
                 {
+                    matchFoundWindow.Hide();
                     gameLobby.SetMatchmakingMode(null);
                     AddMainChannelNotice("Matchmaking failed: unable to join the created room.");
                 }
@@ -1435,6 +1442,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
         {
             pendingMatchmakingParticipants = null;
             pendingMatchmakingMode = null;
+            matchFoundWindow.Hide();
             matchmakingService?.Reset();
         }
 

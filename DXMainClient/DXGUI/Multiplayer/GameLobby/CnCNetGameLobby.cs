@@ -349,9 +349,12 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
                 channel.SendCTCPMessage("FHSH " + gameFilesHash, QueuedMessageType.SYSTEM_MESSAGE, 10);
             }
 
-            TopBar.AddPrimarySwitchable(this);
-            TopBar.SwitchToPrimary();
-            WindowManager.SelectedControl = tbChatInput;
+            if (!IsHiddenMatchmakingRoom())
+            {
+                TopBar.AddPrimarySwitchable(this);
+                TopBar.SwitchToPrimary();
+                WindowManager.SelectedControl = tbChatInput;
+            }
             ResetAutoReadyCheckbox();
 
             if (!IsHost && IsHiddenMatchmakingRoom())
@@ -599,6 +602,7 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
         {
             base.Clear();
             factionPresetApplied = false; // Reset for subsequent matchmaking matches
+            matchmakingPresetMode = null; // Clear the matchmaking state to prevent bleeding into normal games
             
             autoLaunchCancellation?.Cancel();
             autoLaunchStarted = false;
@@ -1508,14 +1512,14 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
         /// </summary>
         protected override void GameProcessExited()
         {
+            ResetGameState();
+
             if (!string.IsNullOrEmpty(matchmakingPresetMode))
             {
                 Logger.Log($"MatchmakingGameExited: Auto-leaving room. mode={matchmakingPresetMode}");
                 LeaveGameLobby();
                 return;
             }
-
-            ResetGameState();
 
             if (IsHiddenMatchmakingRoom())
             {
@@ -1648,21 +1652,17 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
 
             if (IsHiddenMatchmakingRoom())
             {
-                TopBar.AddPrimarySwitchable(this);
-
-                if (IsHost)
+                _ = Task.Run(async () =>
                 {
-                    AddNotice("Matchmaking: Auto-leaving room in 60 seconds...".L10N("Client:Main:AutoLeaveNotice"));
-                    _ = Task.Run(async () =>
+                    await Task.Delay(3000);
+                    if (!string.IsNullOrEmpty(matchmakingPresetMode))
                     {
-                        await Task.Delay(60000);
-                        if (Enabled && !string.IsNullOrEmpty(matchmakingPresetMode))
-                        {
-                            Logger.Log("Matchmaking: 60s timeout reached, leaving room.");
+                        Logger.Log("Matchmaking: Game started, explicitly leaving the lobby like pressing Game Lobby button.");
+                        WindowManager.AddCallback(new Action(() => {
                             LeaveGameLobby();
-                        }
-                    });
-                }
+                        }), null);
+                    }
+                });
             }
         }
 
@@ -1988,21 +1988,33 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
                     autoLaunchCancellation = new System.Threading.CancellationTokenSource();
                     var token = autoLaunchCancellation.Token;
 
-                    Logger.Log("Auto-Launching matchmaking game in 10 seconds...");
-                    /*
+                    Logger.Log("Starting matchmaking auto-launch loop...");
                     System.Threading.Tasks.Task.Run(async () => {
                         try {
-                            await System.Threading.Tasks.Task.Delay(10000, token);
-                            WindowManager.AddCallback(new Action(() => {
-                                Logger.Log("Auto-Launching matchmaking game now!");
-                                HostLaunchGame();
-                            }), null);
+                            await System.Threading.Tasks.Task.Delay(5000, token);
+                            while (!token.IsCancellationRequested)
+                            {
+                                WindowManager.AddCallback(new Action(() => {
+                                    if (IsHiddenMatchmakingRoom() && !ProgramConstants.IsInGame)
+                                    {
+                                        if (!Locked)
+                                        {
+                                            Logger.Log("Auto-Locking game room.");
+                                            LockGame();
+                                        }
+                                        else
+                                        {
+                                            Logger.Log("Auto-Launch attempt.");
+                                            BtnLaunchGame_LeftClick(this, EventArgs.Empty);
+                                        }
+                                    }
+                                }), null);
+                                await System.Threading.Tasks.Task.Delay(3000, token);
+                            }
                         } catch (System.Threading.Tasks.TaskCanceledException) {
-                            Logger.Log("Auto-Launch countdown cancelled.");
+                            Logger.Log("Auto-Launch loop cancelled.");
                         }
                     });
-                    */
-                    Logger.Log("Auto-Launch disabled by user requested comment.");
                 }
                 else if (!isReady && autoLaunchStarted)
                 {

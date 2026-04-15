@@ -61,6 +61,7 @@ namespace DTAClient.DXGUI.Generic
             ManualUpdateQueryWindow manualUpdateQueryWindow,
             UpdateWindow updateWindow,
             ExtrasWindow extrasWindow,
+            MatchFoundWindow matchFoundWindow,
             DirectDrawWrapperManager directDrawWrapperManager
         ) : base(windowManager)
         {
@@ -84,6 +85,7 @@ namespace DTAClient.DXGUI.Generic
             this.manualUpdateQueryWindow = manualUpdateQueryWindow;
             this.updateWindow = updateWindow;
             this.extrasWindow = extrasWindow;
+            this.matchFoundWindow = matchFoundWindow;
             this.directDrawWrapperManager = directDrawWrapperManager;
 
             this.cncnetLobby.UpdateCheck += CncnetLobby_UpdateCheck;
@@ -120,6 +122,7 @@ namespace DTAClient.DXGUI.Generic
         private readonly ManualUpdateQueryWindow manualUpdateQueryWindow;
         private readonly UpdateWindow updateWindow;
         private readonly ExtrasWindow extrasWindow;
+        private readonly MatchFoundWindow matchFoundWindow;
         private readonly DirectDrawWrapperManager directDrawWrapperManager;
 
         private XNAMessageBox firstRunMessageBox;
@@ -630,6 +633,7 @@ namespace DTAClient.DXGUI.Generic
             topBar.SetTertiarySwitch(privateMessagingWindow);
             topBar.SetOptionsWindow(optionsWindow);
             WindowManager.AddAndInitializeControl(gameInProgressWindow);
+            WindowManager.AddAndInitializeControl(matchFoundWindow);
 
             foreach (XNAControl control in new XNAControl[]
             {
