@@ -2540,6 +2540,37 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
 
             Logger.Log($"[Matchmaking] Applying preset logic: Mode={matchmakingPresetMode}, MapSHA1={GameModeMap?.Map?.SHA1}, EntryFound={mapEntry != null}, IsHost={IsHost}");
 
+            if (mapEntry != null && !string.IsNullOrEmpty(mapEntry.GameMode) && IsHost)
+            {
+                int modeIndex = ddGameModeMapFilter.Items.FindIndex(item => string.Equals(item.Text?.Trim(), mapEntry.GameMode, StringComparison.OrdinalIgnoreCase));
+                if (modeIndex >= 0 && ddGameModeMapFilter.SelectedIndex != modeIndex)
+                {
+                    Logger.Log($"[Matchmaking] Switching Game Mode to '{mapEntry.GameMode}' for map {mapEntry.SHA1}");
+                    ddGameModeMapFilter.SelectedIndex = modeIndex;
+                    
+                    // After switching Game Mode, we must re-select the map as the list was refreshed
+                    int mapIndex = -1;
+                    for (int i = 0; i < lbGameModeMapList.ItemCount; i++)
+                    {
+                        var item = lbGameModeMapList.GetItem(1, i);
+                        if (item != null && item.Tag is GameModeMap gmm && string.Equals(gmm.Map?.SHA1, mapEntry.SHA1, StringComparison.OrdinalIgnoreCase))
+                        {
+                            mapIndex = i;
+                            break;
+                        }
+                    }
+
+                    if (mapIndex >= 0)
+                    {
+                        lbGameModeMapList.SelectedIndex = mapIndex;
+                    }
+                    else
+                    {
+                        Logger.Log($"[Matchmaking] Warning: Could not re-select map {mapEntry.SHA1} after switching to mode {mapEntry.GameMode}");
+                    }
+                }
+            }
+
             if (mapEntry != null && mapEntry.HasForcedSpawns && IsHost)
             {
                 var pExtraOptions = GetPlayerExtraOptions();

@@ -87,8 +87,13 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                                     }
                                 }
                             }
+                            else
+                            {
+                                entry.GameMode = tag;
+                                Logger.Log($"[Matchmaking] Detected Game Mode '{entry.GameMode}' for map SHA1 {entry.SHA1}");
+                            }
                         }
-                        Logger.Log($"[Matchmaking] Loaded map entry for SHA1 {entry.SHA1} with {entry.TeamSpawns.Count} team mappings from raw: {rawValue}");
+                        Logger.Log($"[Matchmaking] Loaded map entry for SHA1 {entry.SHA1} with {entry.TeamSpawns.Count} team mappings and GameMode='{entry.GameMode}' from raw: {rawValue}");
                         entries.Add(entry);
                     }
                     if (entries.Count > 0)

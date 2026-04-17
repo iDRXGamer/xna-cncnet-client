@@ -14,6 +14,8 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
         /// </summary>
         public Dictionary<int, int[]> TeamSpawns { get; set; } = new Dictionary<int, int[]>();
 
+        public string? GameMode { get; set; }
+
         public MatchmakingMapEntry(string sha1)
         {
             SHA1 = sha1;
