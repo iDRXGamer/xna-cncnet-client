@@ -398,6 +398,12 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             lblMatchmakingMode.Text = "MATCH MODE:";
             MatchmakingSettings.Instance.Initialize();
             MatchmakingMapDefinitions.Instance.Initialize();
+            if (MatchmakingSettings.Instance.DebugMode)
+            {
+                WindowManager.AddCallback(new Action(() => {
+                    AddMainChannelNotice("--- Matchmaking Debug Mode is ACTIVE ---");
+                }), null);
+            }
             foreach (var mode in MatchmakingSettings.Instance.Modes)
             {
                 ddMatchmakingMode.AddItem(new XNADropDownItem { Text = mode.UIName });
@@ -1201,7 +1207,8 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                 Logger.Log($"[Matchmaking] { "CreateRoomRequested" }: { $"mode={mode}, maxPlayers={maxPlayers}, participants={string.Join(",", participants)}" }");
 
                 string previousCreatedChannelName = lastCreatedGameChannelName;
-                matchFoundWindow.Show();
+                if (!MatchmakingSettings.Instance.DebugMode)
+                    matchFoundWindow.Show();
                 Gcw_GameCreated(this, new GameCreationEventArgs(roomName, maxPlayers, string.Empty, selectedTunnel, 0));
 
                 if (pendingMatchmakingParticipants != null &&
@@ -1387,7 +1394,8 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
                 AddMainChannelNotice($"Match found ({mode}). Joining room...");
 
-                matchFoundWindow.Show();
+                if (!MatchmakingSettings.Instance.DebugMode)
+                    matchFoundWindow.Show();
 
                 HostedCnCNetGame hostedGame = new HostedCnCNetGame(
                     channelName,

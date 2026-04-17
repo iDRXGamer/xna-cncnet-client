@@ -349,7 +349,7 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
                 channel.SendCTCPMessage("FHSH " + gameFilesHash, QueuedMessageType.SYSTEM_MESSAGE, 10);
             }
 
-            if (!IsHiddenMatchmakingRoom())
+            if (!IsHiddenMatchmakingRoom() || MatchmakingSettings.Instance.DebugMode)
             {
                 TopBar.AddPrimarySwitchable(this);
                 TopBar.SwitchToPrimary();
@@ -368,8 +368,11 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
                     RequestPlayerOptions(oppositeSide, oppositeColor, 0, 0);
                 }
 
-                chkAutoReady.Enable();
-                chkAutoReady.Checked = true;
+                if (!MatchmakingSettings.Instance.DebugMode)
+                {
+                    chkAutoReady.Enable();
+                    chkAutoReady.Checked = true;
+                }
             }
 
             UpdatePing();
@@ -803,7 +806,9 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
                 
                 if (matchmakingPresetMode != null)
                 {
-                    ApplyMatchmakingFactionColorPreset(broadcastChanges: false);
+                    // broadcastChanges: true ensures that when a new player joins, 
+                    // the host sends them their assigned team and color immediately.
+                    ApplyMatchmakingFactionColorPreset(broadcastChanges: true);
                 }
 
                 BroadcastPlayerOptions();
@@ -1514,7 +1519,7 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
         {
             ResetGameState();
 
-            if (!string.IsNullOrEmpty(matchmakingPresetMode))
+            if (!string.IsNullOrEmpty(matchmakingPresetMode) && !MatchmakingSettings.Instance.DebugMode)
             {
                 Logger.Log($"MatchmakingGameExited: Auto-leaving room. mode={matchmakingPresetMode}");
                 LeaveGameLobby();
@@ -1675,6 +1680,33 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
 
             iniFile.SetIntValue("Settings", "GameID", UniqueGameID);
             iniFile.SetBooleanValue("Settings", "Host", IsHost);
+
+            if (PlayerExtraOptionsPanel != null)
+            {
+                Logger.Log($"[AutoAlly] UI Checkbox UseTeamStartMappings: {PlayerExtraOptionsPanel.UseTeamStartMappings}");
+                if (PlayerExtraOptionsPanel.UseTeamStartMappings)
+                {
+                    iniFile.SetBooleanValue("Settings", "IsUseTeamStartMappings", true);
+                    var mappings = PlayerExtraOptionsPanel.GetTeamStartMappings();
+                    Logger.Log($"[AutoAlly] Writing {mappings.Count} mappings to [TeamStartMappings].");
+                    foreach (var mapping in mappings)
+                    {
+                        if (mapping.IsValid)
+                        {
+                            Logger.Log($"[AutoAlly] Mapping: Start={mapping.Start}, TeamId={mapping.TeamId}");
+                            iniFile.SetIntValue("TeamStartMappings", mapping.Start.ToString(), mapping.TeamId);
+                        }
+                        else
+                        {
+                            Logger.Log($"[AutoAlly] Warning: Mapping is invalid! Team={mapping.Team}, Start={mapping.Start}");
+                        }
+                    }
+                }
+            }
+            else
+            {
+                Logger.Log("[AutoAlly] Error: PlayerExtraOptionsPanel is null!");
+            }
 
             PlayerInfo localPlayer = FindLocalPlayer();
 
@@ -1981,7 +2013,7 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
                     ApplyMatchmakingFactionColorPreset(broadcastChanges: true);
                 }
 
-                if (isReady && !autoLaunchStarted)
+                if (isReady && !autoLaunchStarted && !MatchmakingSettings.Instance.DebugMode)
                 {
                     autoLaunchStarted = true;
                     // // StartAutoLaunchCountdown(); // Disabled temporarily by user request // Disabled temporarily by user request
@@ -2496,8 +2528,61 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
 
             int playerCountToAssign = Math.Min(Players.Count, modeDef.PlayerCount);
             int maximumTeamId = ProgramConstants.TEAMS.Count;
+            int teamSize = modeDef.PlayerCount / 2; // For 3v3, it will be 3. For 2v2, it will be 2.
             bool anyChanged = false;
             var usedColorIndices = new HashSet<int>();
+
+            MatchmakingMapEntry? mapEntry = null;
+            if (MatchmakingMapDefinitions.Instance.ModeMapEntries.TryGetValue(matchmakingPresetMode, out var entries))
+            {
+                mapEntry = entries.FirstOrDefault(e => string.Equals(e.SHA1, GameModeMap.Map.SHA1, StringComparison.OrdinalIgnoreCase));
+            }
+
+            Logger.Log($"[Matchmaking] Applying preset logic: Mode={matchmakingPresetMode}, MapSHA1={GameModeMap?.Map?.SHA1}, EntryFound={mapEntry != null}, IsHost={IsHost}");
+
+            if (mapEntry != null && mapEntry.HasForcedSpawns && IsHost)
+            {
+                var pExtraOptions = GetPlayerExtraOptions();
+                pExtraOptions.IsUseTeamStartMappings = true;
+                pExtraOptions.TeamStartMappings.Clear();
+
+                // Build a complete mapping list for all possible spawns
+                // Waypoints in the INI are 0-based. Waypoint N maps to Start N+1 in CnCNet.
+                int maxWP = mapEntry.TeamSpawns.Values.SelectMany(x => x).DefaultIfEmpty(-1).Max();
+                int spawnCount = Math.Max(maxWP, 7) + 1; // Ensure we cover at least 8 spots
+
+                Logger.Log($"[Matchmaking] Building Auto-Allying table for {spawnCount} spots based on map entry.");
+
+                for (int wpIndex = 0; wpIndex < spawnCount; wpIndex++)
+                {
+                    string teamChar = TeamStartMapping.NO_TEAM;
+                    int spawnNumber = wpIndex + 1; // Spawns in INI are 1-indexed (1, 2, 3...)
+                    
+                    foreach (var kvp in mapEntry.TeamSpawns)
+                    {
+                        if (kvp.Value.Contains(spawnNumber))
+                        {
+                            // teamId 1 -> A, 2 -> B, etc.
+                            if (kvp.Key >= 1 && kvp.Key <= ProgramConstants.TEAMS.Count)
+                                teamChar = ProgramConstants.TEAMS[kvp.Key - 1];
+                            break;
+                        }
+                    }
+                    
+                    pExtraOptions.TeamStartMappings.Add(new TeamStartMapping() { Start = spawnNumber, Team = teamChar });
+                    Logger.Log($"[Matchmaking]   Map: WP {wpIndex} -> Spawn {spawnNumber} -> Team {teamChar}");
+                }
+                
+                SetPlayerExtraOptions(pExtraOptions);
+                BroadcastPlayerExtraOptions();
+                Logger.Log("[Matchmaking] Auto-Allying table applied and broadcasted.");
+            }
+            else if (mapEntry == null && IsHost)
+            {
+                Logger.Log($"[Matchmaking] Warning: No map entry found in MatchmakingMaps.ini for SHA1 {GameModeMap?.Map?.SHA1}. Auto-Allying skipped.");
+            }
+
+            var teamPlayerCounts = new Dictionary<int, int>();
 
             for (int i = 0; i < playerCountToAssign; i++)
             {
@@ -2508,8 +2593,10 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
                 int colorIndex = ResolveColorIndex(preferredColorNames, i, usedColorIndices);
                 int teamId = 0;
 
-                if (canAssignTeams && maximumTeamId > 0)
-                    teamId = Math.Min((i / 2) + 1, maximumTeamId);
+                if (canAssignTeams && maximumTeamId > 0 && teamSize > 0)
+                {
+                    teamId = Math.Min((i / teamSize) + 1, maximumTeamId);
+                }
 
                 bool playerChanged = false;
                 if (playerInfo.SideId != sideIndex)
@@ -2524,10 +2611,25 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
                     playerChanged = true;
                 }
 
-                if (playerInfo.TeamId != teamId)
+                // TeamId is now handled automatically by Auto-Allying (IsUseTeamStartMappings)
+                // if mapEntry is present. We only need to calculate it for logging or if mismatch.
+                int assignedTeamId = teamId;
+
+                if (mapEntry != null && mapEntry.TeamSpawns.TryGetValue(teamId, out int[]? spawns))
                 {
-                    playerInfo.TeamId = teamId;
-                    playerChanged = true;
+                    if (!teamPlayerCounts.ContainsKey(teamId))
+                        teamPlayerCounts[teamId] = 0;
+
+                    int playerInTeamIndex = teamPlayerCounts[teamId]++;
+                    if (playerInTeamIndex < spawns.Length)
+                    {
+                        int spawnPoint = spawns[playerInTeamIndex];
+                        if (playerInfo.StartingLocation != spawnPoint)
+                        {
+                            playerInfo.StartingLocation = spawnPoint;
+                            playerChanged = true;
+                        }
+                    }
                 }
 
                 if (playerChanged)
@@ -2552,6 +2654,7 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
 
         private void ApplyMatchmakingOptionPreset(string mode)
         {
+            ResetGameOptionsToDefaults();
             MatchmakingModeDefinition def = MatchmakingSettings.Instance.Modes.FirstOrDefault(m => string.Equals(m.UIName, mode, StringComparison.OrdinalIgnoreCase));
 
             if (def == null)
@@ -2560,14 +2663,24 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
                 return;
             }
 
+            Logger.Log($"[Matchmaking] Applying option preset for mode '{mode}'.");
+
             foreach (KeyValuePair<string, bool> kvp in def.ForceCheckboxes)
+            {
+                Logger.Log($"[Matchmaking] Forcing Checkbox '{kvp.Key}' to {kvp.Value}");
                 SetCheckBoxValue(kvp.Key, kvp.Value);
+            }
 
             foreach (KeyValuePair<string, string> kvp in def.ForceDropdowns)
             {
+                Logger.Log($"[Matchmaking] Forcing Dropdown '{kvp.Key}' to '{kvp.Value}'");
                 // Prioritize matching by Text (e.g. "10000") over Index
                 GameLobbyDropDown dd = FindDropDown(kvp.Key);
-                if (dd == null) continue;
+                if (dd == null)
+                {
+                    Logger.Log($"[Matchmaking] Warning: Dropdown '{kvp.Key}' not found.");
+                    continue;
+                }
 
                 int textIndex = dd.Items.FindIndex(item => string.Equals(item.Text?.Trim(), kvp.Value, StringComparison.OrdinalIgnoreCase));
                 if (textIndex >= 0)
@@ -2577,6 +2690,10 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
                 else if (int.TryParse(kvp.Value, out int idx))
                 {
                     SetDropDownValueByIndex(kvp.Key, idx);
+                }
+                else
+                {
+                    Logger.Log($"[Matchmaking] Warning: Could not find value '{kvp.Value}' for dropdown '{kvp.Key}'");
                 }
             }
 
@@ -2592,8 +2709,10 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
                 Logger.Log($"[Matchmaking] Processing map selection for mode '{mode}' (req players: {reqPlayers}).");
 
                 // 1. Try to find maps from the defined list in MatchmakingMaps.ini
-                if (MatchmakingMapDefinitions.Instance.ModeMapHashes.TryGetValue(mode, out List<string> definedMapHashes) && definedMapHashes.Count > 0)
+                var definedMapHashes = new List<string>();
+                if (MatchmakingMapDefinitions.Instance.ModeMapEntries.TryGetValue(mode, out var definedMapEntries) && definedMapEntries.Count > 0)
                 {
+                    definedMapHashes = definedMapEntries.Select(e => e.SHA1).ToList();
                     Logger.Log($"[Matchmaking] Looking for maps in defined INI list by Hash: {string.Join(", ", definedMapHashes)}");
 
                     foreach (GameModeMap m in GameModeMaps)
@@ -2672,7 +2791,10 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
             GameLobbyCheckBox checkBox = CheckBoxes.Find(cb =>
                 string.Equals(cb.Name, checkBoxName, StringComparison.OrdinalIgnoreCase));
             if (checkBox == null)
+            {
+                Logger.Log($"[Matchmaking] Warning: Checkbox '{checkBoxName}' not found in lobby.");
                 return;
+            }
 
             checkBox.HostChecked = value;
             checkBox.UserChecked = value;
@@ -2702,7 +2824,13 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
         private void SetDropDownValueByIndex(string dropDownName, int index)
         {
             GameLobbyDropDown dropDown = FindDropDown(dropDownName);
-            if (dropDown == null || index < 0 || index >= dropDown.Items.Count)
+            if (dropDown == null)
+            {
+                Logger.Log($"[Matchmaking] Warning: Dropdown '{dropDownName}' not found in lobby.");
+                return;
+            }
+
+            if (index < 0 || index >= dropDown.Items.Count)
                 return;
 
             dropDown.HostSelectedIndex = index;

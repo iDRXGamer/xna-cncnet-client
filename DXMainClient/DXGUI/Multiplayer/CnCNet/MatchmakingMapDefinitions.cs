@@ -14,16 +14,16 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
         public static MatchmakingMapDefinitions Instance => instance ??= new MatchmakingMapDefinitions();
 
-        public Dictionary<string, List<string>> ModeMapHashes { get; private set; }
+        public Dictionary<string, List<MatchmakingMapEntry>> ModeMapEntries { get; private set; }
 
         private MatchmakingMapDefinitions()
         {
-            ModeMapHashes = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            ModeMapEntries = new Dictionary<string, List<MatchmakingMapEntry>>(StringComparer.OrdinalIgnoreCase);
         }
 
         public void Initialize()
         {
-            ModeMapHashes.Clear();
+            ModeMapEntries.Clear();
             
             string iniPath = SafePath.CombineFilePath(ProgramConstants.GamePath, "INI", "MatchmakingMaps.ini");
             var fileInfo = SafePath.GetFile(iniPath);
@@ -47,19 +47,54 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
                 var keys = ini.GetSectionKeys(section);
                 if (keys != null && keys.Count > 0)
                 {
-                    List<string> mapHashes = new List<string>();
+                    List<MatchmakingMapEntry> entries = new List<MatchmakingMapEntry>();
                     foreach (string key in keys)
                     {
-                        string hash = ini.GetStringValue(section, key, string.Empty);
-                        if (!string.IsNullOrEmpty(hash))
+                        string rawValue = ini.GetStringValue(section, key, string.Empty);
+                        if (string.IsNullOrEmpty(rawValue))
+                            continue;
+
+                        // Format: SHA1|TeamA:1,2|TeamB:3,4
+                        string[] parts = rawValue.Split('|');
+                        var entry = new MatchmakingMapEntry(parts[0].Trim());
+
+                        for (int i = 1; i < parts.Length; i++)
                         {
-                            mapHashes.Add(hash);
+                            string tag = parts[i].Trim();
+                            if (tag.StartsWith("Team", StringComparison.OrdinalIgnoreCase))
+                            {
+                                int colonIndex = tag.IndexOf(':');
+                                if (colonIndex > 0)
+                                {
+                                    string teamName = tag.Substring(0, colonIndex).ToUpper();
+                                    string spawnList = tag.Substring(colonIndex + 1);
+
+                                    int teamId = teamName switch
+                                    {
+                                        "TEAMA" => 1,
+                                        "TEAMB" => 2,
+                                        "TEAMC" => 3,
+                                        "TEAMD" => 4,
+                                        _ => 0
+                                    };
+
+                                    if (teamId > 0)
+                                    {
+                                        entry.TeamSpawns[teamId] = spawnList.Split(',')
+                                            .Select(s => int.TryParse(s.Trim(), out int val) ? val : -1)
+                                            .Where(v => v >= 0)
+                                            .ToArray();
+                                    }
+                                }
+                            }
                         }
+                        Logger.Log($"[Matchmaking] Loaded map entry for SHA1 {entry.SHA1} with {entry.TeamSpawns.Count} team mappings from raw: {rawValue}");
+                        entries.Add(entry);
                     }
-                    if (mapHashes.Count > 0)
+                    if (entries.Count > 0)
                     {
-                        ModeMapHashes[section] = mapHashes;
-                        Logger.Log($"[Matchmaking] Loaded map pool for mode [{section}] with {mapHashes.Count} maps.");
+                        ModeMapEntries[section] = entries;
+                        Logger.Log($"[Matchmaking] Loaded map pool for mode [{section}] with {entries.Count} maps.");
                     }
                 }
             }

@@ -26,6 +26,8 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
         private static MatchmakingSettings? instance;
 
         public static MatchmakingSettings Instance => instance ??= new MatchmakingSettings();
+        
+        public bool DebugMode => true;
 
         public List<MatchmakingModeDefinition> Modes { get; private set; }
 
@@ -47,6 +49,9 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             }
 
             IniFile ini = new IniFile(iniPath);
+            // DebugMode is now a hardcoded constant above.
+            Logger.Log($"[Matchmaking] Settings initialization: DebugMode is {(DebugMode ? "ENABLED" : "DISABLED")} (Hardcoded)");
+
             List<string> modeKeys = ini.GetSectionKeys("MatchmakingModes");
             
             if (modeKeys == null || modeKeys.Count == 0)

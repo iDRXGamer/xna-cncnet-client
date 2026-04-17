@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 using ClientCore.Extensions;
 using ClientCore.I18N;
@@ -88,6 +88,7 @@ public class GameSessionDropDown : XNAClientDropDown, IGameSessionSetting
         switch (key)
         {
             case "Items":
+                Items.Clear();
                 string[] items = value.SplitWithCleanup();
                 string[] itemLabels = iniFile.GetStringListValue(Name, "ItemLabels", "");
                 string[] iconNames = iniFile.GetStringListValue(Name, "Icons", "");

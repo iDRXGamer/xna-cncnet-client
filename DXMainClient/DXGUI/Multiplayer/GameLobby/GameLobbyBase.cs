@@ -1252,7 +1252,11 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
         protected PlayerExtraOptions GetPlayerExtraOptions() =>
             PlayerExtraOptionsPanel == null ? new PlayerExtraOptions() : PlayerExtraOptionsPanel.GetPlayerExtraOptions();
 
-        protected void SetPlayerExtraOptions(PlayerExtraOptions playerExtraOptions) => PlayerExtraOptionsPanel?.SetPlayerExtraOptions(playerExtraOptions);
+        protected void SetPlayerExtraOptions(PlayerExtraOptions playerExtraOptions)
+        {
+            Logger.Log($"[AutoAlly] SetPlayerExtraOptions called. IsUseTeamStartMappings={playerExtraOptions.IsUseTeamStartMappings}, MappingsCount={playerExtraOptions.TeamStartMappings?.Count ?? 0}");
+            PlayerExtraOptionsPanel?.SetPlayerExtraOptions(playerExtraOptions);
+        }
 
         protected string GetTeamMappingsError() => GetPlayerExtraOptions()?.GetTeamMappingsError();
 
@@ -1327,6 +1331,22 @@ namespace DTAClient.DXGUI.Multiplayer.GameLobby
         protected GameModeMapFilter GetDefaultGameModeMapFilter()
         {
             return ddGameModeMapFilter.Items[GetDefaultGameModeMapFilterIndex()].Tag as GameModeMapFilter;
+        }
+
+        /// <summary>
+        /// Resets all game options to their default values as defined in the INI.
+        /// </summary>
+        protected void ResetGameOptionsToDefaults()
+        {
+            Logger.Log("[Matchmaking] Resetting all game options to defaults.");
+            foreach (var cb in CheckBoxes)
+                ReadINIForControl(cb);
+
+            foreach (var dd in DropDowns)
+                ReadINIForControl(dd);
+
+            if (PlayerExtraOptionsPanel != null)
+                ReadINIForControl(PlayerExtraOptionsPanel);
         }
 
         private int GetSpectatorSideIndex() => SideCount + RandomSelectorCount;
