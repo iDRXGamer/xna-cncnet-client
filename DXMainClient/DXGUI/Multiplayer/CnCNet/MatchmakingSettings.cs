@@ -27,7 +27,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
         public static MatchmakingSettings Instance => instance ??= new MatchmakingSettings();
         
-        public bool DebugMode => true;
+        public bool DebugMode => false;
 
         public List<MatchmakingModeDefinition> Modes { get; private set; }
 
