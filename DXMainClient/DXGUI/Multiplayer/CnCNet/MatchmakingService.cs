@@ -297,7 +297,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             }
 
             participants = participants
-                .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(p => GetDeterministicHash(matchId + p))
                 .ToList();
 
             if (!participants.Contains(sender, StringComparer.OrdinalIgnoreCase))
@@ -343,6 +343,12 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
             int requiredPlayers = requiredPlayersForMode(mode);
 
+            if (requiredPlayers <= 0)
+            {
+                Warn("MatchClaimSkipped", $"mode={mode}, reason=invalid_required_players, count={requiredPlayers}");
+                return;
+            }
+
             if (queue == null || queue.Count < requiredPlayers)
             {
                 Info("MatchClaimWaiting", $"mode={mode}, queued={queue?.Count ?? 0}, required={requiredPlayers}");
@@ -350,7 +356,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             }
 
             List<QueueEntry> participants = queue
-                .OrderBy(qe => qe.PlayerName, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(qe => GetDeterministicHash(qe.Ticket + qe.PlayerName))
                 .Take(requiredPlayers)
                 .ToList();
 
@@ -456,6 +462,19 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
             if (updateUiState)
                 setQueueUiState(false);
+        }
+
+        private int GetDeterministicHash(string input)
+        {
+            unchecked
+            {
+                long hash = 23;
+                foreach (char c in input)
+                {
+                    hash = (hash * 31) + c;
+                }
+                return (int)hash;
+            }
         }
 
         private sealed class QueueEntry
