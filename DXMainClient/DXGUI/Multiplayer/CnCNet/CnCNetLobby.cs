@@ -2,6 +2,7 @@
 using ClientGUI;
 using DTAClient.Domain.Multiplayer;
 using DTAClient.Domain.Multiplayer.CnCNet;
+using DTAClient.Domain.Multiplayer.CnCNet.Matchmaking;
 using DTAClient.DXGUI.Generic;
 using DTAClient.DXGUI.Multiplayer.GameLobby;
 using DTAClient.Online;
@@ -76,6 +77,10 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
         private XNAClientButton btnLogout;
         private XNAClientButton btnNewGame;
         private XNAClientButton btnJoinGame;
+        private XNAClientButton btnMatchmaking;
+
+        private MatchmakingService matchmakingService;
+        private MatchmakingWindow matchmakingWindow;
 
         private XNAChatTextBox tbChatInput;
 
@@ -155,6 +160,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
         private void LogoutEvent(object sender, EventArgs e)
         {
             isJoiningGame = false;
+            matchmakingService?.LeaveQueue(true);
         }
 
         public override void Initialize()
@@ -169,9 +175,18 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             localGameID = ClientConfiguration.Instance.LocalGame;
             localGame = gameCollection.GameList.Find(g => g.InternalName.ToUpper() == localGameID.ToUpper());
 
+            btnMatchmaking = new XNAClientButton(WindowManager);
+            btnMatchmaking.Name = nameof(btnMatchmaking);
+            btnMatchmaking.ClientRectangle = new Rectangle(12, Height - 29, UIDesignConstants.BUTTON_WIDTH_133, UIDesignConstants.BUTTON_HEIGHT);
+            btnMatchmaking.Text = "Matchmaking".L10N("Client:Main:Matchmaking");
+            btnMatchmaking.AllowClick = false;
+            btnMatchmaking.LeftClick += BtnMatchmaking_LeftClick;
+
+            int newGameX = MatchmakingConfig.Instance.Enabled ? btnMatchmaking.Right + 12 : 12;
+
             btnNewGame = new XNAClientButton(WindowManager);
             btnNewGame.Name = nameof(btnNewGame);
-            btnNewGame.ClientRectangle = new Rectangle(12, Height - 29, UIDesignConstants.BUTTON_WIDTH_133, UIDesignConstants.BUTTON_HEIGHT);
+            btnNewGame.ClientRectangle = new Rectangle(newGameX, Height - 29, UIDesignConstants.BUTTON_WIDTH_133, UIDesignConstants.BUTTON_HEIGHT);
             btnNewGame.Text = "Create Game".L10N("Client:Main:CreateGame");
             btnNewGame.AllowClick = false;
             btnNewGame.LeftClick += BtnNewGame_LeftClick;
@@ -191,9 +206,10 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             btnLogout.Text = "Log Out".L10N("Client:Main:LogOut");
             btnLogout.LeftClick += BtnLogout_LeftClick;
 
+            int gameListLeft = MatchmakingConfig.Instance.Enabled ? btnMatchmaking.X : btnNewGame.X;
             var gameListRectangle = new Rectangle(
-                btnNewGame.X, 41,
-                btnJoinGame.Right - btnNewGame.X, btnNewGame.Y - 47
+                gameListLeft, 41,
+                btnJoinGame.Right - gameListLeft, btnNewGame.Y - 47
             );
 
             panelGameFilters = new GameFiltersPanel(WindowManager, gameLobby);
@@ -344,6 +360,25 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
             InitializeGameList();
 
+            if (MatchmakingConfig.Instance.Enabled)
+            {
+                matchmakingService = new MatchmakingService(
+                    new MatchmakingApiService(MatchmakingConfig.Instance.ApiUrl),
+                    new ApiSpawnService(mapLoader),
+                    WindowManager,
+                    () => ProgramConstants.PLAYERNAME,
+                    CanJoinMatchmakingQueue,
+                    MatchmakingConfig.Instance.DefaultSide);
+                matchmakingService.SearchStateChanged += MatchmakingService_SearchStateChanged;
+                matchmakingService.Notice += (s, message) => AddMainChannelNotice(message);
+
+                matchmakingWindow = new MatchmakingWindow(WindowManager, matchmakingService);
+                DarkeningPanel.AddAndInitializeWithControl(WindowManager, matchmakingWindow);
+                matchmakingWindow.Disable();
+
+                AddChild(btnMatchmaking);
+            }
+
             AddChild(btnNewGame);
             AddChild(btnJoinGame);
             AddChild(btnLogout);
@@ -372,6 +407,8 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             pmWindow.SetJoinUserAction(JoinUser);
 
             base.Initialize();
+
+            btnMatchmaking.Y = btnNewGame.Y;
 
             WindowManager.CenterControlOnScreen(this);
 
@@ -1209,6 +1246,9 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
         private void ConnectionManager_Disconnected(object sender, EventArgs e)
         {
+            matchmakingService?.LeaveQueue(false);
+
+            btnMatchmaking.AllowClick = false;
             btnNewGame.AllowClick = false;
             btnJoinGame.AllowClick = false;
             ddCurrentChannel.AllowDropDown = false;
@@ -1234,6 +1274,7 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
 
         private void ConnectionManager_WelcomeMessageReceived(object sender, EventArgs e)
         {
+            btnMatchmaking.AllowClick = true;
             btnNewGame.AllowClick = true;
             btnJoinGame.AllowClick = true;
             ddCurrentChannel.AllowDropDown = true;
@@ -1914,6 +1955,48 @@ namespace DTAClient.DXGUI.Multiplayer.CnCNet
             }
 
             JoinGame(game, string.Empty, messageView);
+        }
+
+        private void BtnMatchmaking_LeftClick(object sender, EventArgs e)
+        {
+            if (matchmakingService.IsInQueue)
+            {
+                matchmakingService.LeaveQueue(true);
+                return;
+            }
+
+            matchmakingWindow.Open();
+        }
+
+        private void MatchmakingService_SearchStateChanged(object sender, EventArgs e)
+        {
+            if (matchmakingService.IsSearching)
+            {
+                btnMatchmaking.Text = "Cancel Search".L10N("Client:Matchmaking:CancelSearch");
+                btnNewGame.AllowClick = false;
+                btnJoinGame.AllowClick = false;
+            }
+            else
+            {
+                btnMatchmaking.Text = "Matchmaking".L10N("Client:Main:Matchmaking");
+                btnNewGame.AllowClick = connectionManager.IsConnected;
+                btnJoinGame.AllowClick = connectionManager.IsConnected;
+            }
+        }
+
+        private bool CanJoinMatchmakingQueue()
+        {
+            return connectionManager != null &&
+                   connectionManager.IsConnected &&
+                   !isJoiningGame &&
+                   (gameLobby == null || !gameLobby.Enabled) &&
+                   (gameLoadingLobby == null || !gameLoadingLobby.Enabled);
+        }
+
+        private void AddMainChannelNotice(string message)
+        {
+            Logger.Log("[Matchmaking] " + message);
+            connectionManager.MainChannel?.AddMessage(new ChatMessage(Color.Yellow, Renderer.GetSafeString(message, lbChatMessages.FontIndex)));
         }
     }
 }
